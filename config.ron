@@ -1,0 +1,126 @@
+// Configuration of the analysis steps: one section per executable in src/bin.
+// Each executable reads only its own section, e.g. `fit config.ron` reads `fit`.
+// Within a section, every field except the input file and names is optional
+// and defaults to the value shown here. A leading "~/" in paths is expanded
+// to $HOME. Options may be written without Some(...).
+(
+    // bin/fit: inverse Bayes fit of the distribution of the centrality observable,
+    //   P(n) = ∫ P(n|c_b) dc_b over the b-centrality c_b in [0, 1]
+    fit: (
+        // Input file and histogram (TH1) of the observable: multiplicity, energy, ...
+        data_file: "~/star_mult_3gev_hist_500k.root",
+        data_hist: "hRefMult",
+
+        // Output directory; the fit is written to <out_dir>/bayes_fit.root
+        out_dir: "./out/",
+
+        // Fit range in the units of the data: bins whose centers lie in [fit_min, fit_max]
+        fit_min: 10,
+        // fit_max: 400,
+
+        // Fluctuation kernel P(n|c_b):
+        //   Gamma - Gamma distribution (Rogly, Giacalone, Ollitrault, PRC 98 024902)
+        //   Gauss - Gaussian truncated to n > 0 (Das et al., PRC 97 014905); needs a
+        //           larger fit_min, as it does not describe peripheral events
+        kernel: Gamma,
+
+        // Mean of n versus c_b:
+        //   ExpPoly(J) - n_knee * exp(-a1 c_b - a2 c_b^2 - ... - aJ c_b^J)
+        //                parameters: theta, n_knee, a1..aJ
+        //   Indra      - x_max * (1 - c_b^alpha)^gamma + x_min (Frankland et al., PRC 104 034609)
+        //                parameters: theta, x_max, x_min, alpha, gamma
+        mean: ExpPoly(3),
+
+        // Variance of n versus c_b:
+        //   Proportional - theta * mean(c_b)  (constant reduced variance, the usual choice)
+        //   Constant     - theta * mean(0)    (constant width)
+        variance: Proportional,
+
+        // Pile-up: with probability p (fit parameter "p"), a recorded event is the
+        // sum of two independent collisions. The classes refer to single
+        // collisions; the pile-up dominated tail is not classified.
+        pile_up: false,
+
+        // Statistic:
+        //   Likelihood - Poisson likelihood ratio, for histograms of raw counts
+        //   Chi2       - Neyman chi2 with the data errors, for weighted or scaled histograms
+        fit_method: Likelihood,
+
+        // Normalization of the model:
+        //   Data - the number of entries of the histogram (it must contain all events)
+        //   Free - fitted; for data with events lost below the fit range
+        normalization: Data,
+
+        // Comparison of a bin to the model: Integral of the density over the bin,
+        // or Center (density at the bin center times the width, as TH1::Fit)
+        bin_model: Integral,
+
+        // Quadrature points for the integral over c_b
+        cb_points: 1024,
+
+        // Optional start values, steps, limits and fixed parameters, by name;
+        // by default the start values come from the data (see README)
+        // params: {
+        //     "theta": (value: 1.0, min: 0.1, max: 10),
+        //     "a3": (value: 0, fixed: true),
+        // },
+
+        // Minuit strategy (0, 1, 2), maximum number of calls and tolerance
+        strategy: 1,
+        // max_calls: 10000,
+        // tolerance: 0.1,
+
+        // Number of threads; omit to use all available cores
+        // n_threads: 8,
+    ),
+
+    // bin/define-centrality: centrality classes from the fit, with the
+    // distributions of c_b and of the impact parameter b in each class
+    centrality: (
+        // File written by the fit
+        fit_file: "./out/bayes_fit.root",
+
+        // Output directory and name of the output ROOT file
+        out_dir: "./out/",
+        final_file: "FINAL.root",
+
+        // Class edges in percent; or n_classes classes of equal width
+        classes: [0, 5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100],
+        // n_classes: 10,
+
+        // Borders of the classes:
+        //   BinEdges - nearest data bin edge (whole bins, e.g. integer multiplicities)
+        //   Exact    - exact values with the nominal fractions of events above them
+        borders: BinEdges,
+
+        // Impact parameter distribution P(b) of inelastic events (omit to get c_b only):
+        //   Geometric(sigma_inel: 685.0)                 - c_b = pi b^2 / sigma_inel, sigma in fm^2
+        //   Fermi(sigma_inel: 685.0, width: 0.4)         - 2 pi b / (1 + exp((b - b0)/width)),
+        //   Fermi(b0: 14.5, width: 0.4)                    b0 from sigma_inel or given
+        //   Histogram(file: "~/b.root", hist: "hB")       - histogram of b (fm)
+        //   Tree(file: "~/glauber.root", tree: "nt_Au_Au", branch: "B") - b of each event
+        impact_parameter: Geometric(sigma_inel: 685.0),
+
+        // Histograms of b on [0, b_max] (default b_max: largest b) and of c_b on [0, 1]
+        b_bins: 200,
+        // b_max: 20.0,
+        cb_bins: 500,
+
+        // Quadrature points for the integrals over c_b
+        cb_points: 4096,
+
+        // Parameter sets drawn from the fit covariance to propagate the fit
+        // uncertainties to the borders, <c_b> and <b>; 0 to disable
+        n_error_samples: 200,
+        // seed: 0,
+
+        // Table files written to out_dir in addition to the table on stdout:
+        //   Tex - LaTeX document (<table_name>.tex)
+        //   Csv - comma separated values (<table_name>.csv)
+        //   Cpp - ROOT macro with arrays and GetCentMult(mult) (<table_name>.C)
+        table_formats: [Csv, Cpp],
+        table_name: "centrality_table",
+
+        // n_threads: 8,
+    ),
+)

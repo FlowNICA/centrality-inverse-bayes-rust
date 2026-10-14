@@ -1,0 +1,16 @@
+[package]
+name = "centrality-inverse-bayes-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+minuit2 = "0.5"
+oxiroot = { git = "https://github.com/mathieuouillon/oxiroot", version = "0.3.0", default-features = false }
+rand = "0.10"
+rand_distr = "0.6"
+rayon = "1"
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+statrs = "0.18"
+thiserror = "2"
