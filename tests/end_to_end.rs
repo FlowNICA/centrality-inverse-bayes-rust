@@ -738,3 +738,134 @@ fn trigger_inefficiency_at_low_multiplicity() {
         Normalization::Efficiency(true_efficiency)
     );
 }
+
+#[test]
+fn mean_and_variance_from_a_histogram_of_n_versus_b() {
+    let dir = test_dir("histogram");
+    let events = toy_events(300_000, 21, None);
+    let data = dir.join("toy.root");
+    write_toy(&data, &events, 500, 500.);
+    /* the model: n versus b of an independent toy, with b on x or on y */
+    let mut n_vs_b = Hist::reg(200, 0., 15.)
+        .reg(500, 0., 500.)
+        .name("h2_n_b")
+        .double();
+    let mut b_vs_n = Hist::reg(500, 0., 500.)
+        .reg(200, 0., 15.)
+        .name("h2_b_n")
+        .double();
+    let mut b_hist = Hist::reg(400, 0., 15.).name("hB").double();
+    for (b, n) in toy_events(1_000_000, 22, None) {
+        n_vs_b.fill(b, n);
+        b_vs_n.fill(n, b);
+        b_hist.fill(b);
+    }
+    let model = dir.join("model.root");
+    FileWriter::create(&model)
+        .add(&n_vs_b)
+        .add(&b_vs_n)
+        .add(&b_hist)
+        .write(Compression::default())
+        .unwrap();
+
+    /* each with its own P(b), here the same distribution given in three
+     * ways; Free normalization */
+    let config = dir.join("config.ron");
+    std::fs::write(
+        &config,
+        format!(
+            r#"(
+                fit: (
+                    data_file: "{data}",
+                    data_hist: "hMult",
+                    out_dir: "{dir}",
+                    fit_min: 10,
+                    normalization: Free,
+                    mean: Histogram(
+                        file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n",
+                        impact_parameter: Geometric(sigma_inel: {SIGMA_INEL:?}),
+                    ),
+                    variance: Histogram(
+                        file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n",
+                        impact_parameter: Histogram(file: "{model}", hist: "hB"),
+                    ),
+                ),
+                centrality: (
+                    fit_file: "{dir}/bayes_fit.root",
+                    out_dir: "{dir}",
+                    classes: [0, 10, 20, 40, 60, 80, 100],
+                    impact_parameter: Tree(file: "{data}", tree: "events", branch: "B"),
+                ),
+            )"#,
+            data = data.display(),
+            model = model.display(),
+            dir = dir.display()
+        ),
+    )
+    .unwrap();
+    let fit = FitConfig::from_ron_file(&config).unwrap();
+    let r = centrality_inverse_bayes_rust::run(fit.clone()).unwrap();
+    assert!(r.valid);
+    assert_eq!(r.names, ["variance_scale", "mean_scale"]);
+    /* the model is the truth: both scales are 1 */
+    for ((name, v), e) in r.names.iter().zip(&r.values).zip(&r.errors) {
+        assert!((v - 1.).abs() < 0.03 && *e > 0., "{name} = {v} +- {e}");
+    }
+    assert!(r.reduced_statistic() < 1.5, "{}", r.reduced_statistic());
+    assert!(
+        (r.norm / events.len() as f64 - 1.).abs() < 0.02,
+        "{}",
+        r.norm
+    );
+
+    /* the same with b on the y axis */
+    let mut transposed = fit.clone();
+    transposed.out_dir = dir.join("transposed");
+    let swap = |text: String| {
+        text.replace(
+            r#""h2_n_b", x_axis: "b", y_axis: "n""#,
+            r#""h2_b_n", x_axis: "n", y_axis: "b""#,
+        )
+    };
+    transposed.mean = swap(fit.mean.to_string()).parse().unwrap();
+    transposed.variance = swap(fit.variance.to_string()).parse().unwrap();
+    assert!(transposed.mean.to_string().contains("h2_b_n"));
+    assert!(transposed.variance.to_string().contains("hB"));
+    let t = centrality_inverse_bayes_rust::run(transposed).unwrap();
+    for (a, b) in t.values.iter().zip(&r.values) {
+        assert!((a - b).abs() < 1e-6 * b, "{a} vs {b}");
+    }
+
+    /* the fit file keeps both P(b), and the classes reproduce the true <b> */
+    let stored = read_fit(&dir.join(FIT_FILE_NAME)).unwrap();
+    /* (the models themselves differ: σ_inel of a P(b) histogram is NaN) */
+    assert_eq!(stored.model.mean, r.model.mean);
+    assert_eq!(stored.model.variance, r.model.variance);
+    assert_eq!(stored.values, r.values);
+    let c = CentralityConfig::from_ron_file(&config).unwrap();
+    let classes = centrality::run(&c).unwrap();
+    for (k, class) in classes.classes.iter().enumerate() {
+        let b = class.b.unwrap().mean;
+        let truth = true_mean_b(&events, class.min_border, class.max_border, k == 0);
+        assert!(
+            (b - truth).abs() < 0.1,
+            "class {}: {b} vs {truth}",
+            class.label()
+        );
+    }
+
+    /* a P(b) that cannot be read is reported */
+    let mut missing = fit;
+    missing.variance = fit_variance_with_missing_b(&missing.variance);
+    let err = centrality_inverse_bayes_rust::run(missing)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("hBMissing"), "{err}");
+}
+
+fn fit_variance_with_missing_b(v: &VarianceModel) -> VarianceModel {
+    v.to_string()
+        .replace(r#""hB""#, r#""hBMissing""#)
+        .parse()
+        .unwrap()
+}

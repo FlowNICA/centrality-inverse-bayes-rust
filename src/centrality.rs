@@ -162,7 +162,7 @@ impl<'a> Calc<'a> {
             return f64::NEG_INFINITY;
         }
         let n_knee = self.model.n_knee(self.p);
-        let mut hi = n_knee + 10. * self.model.variance(self.p, n_knee).sqrt();
+        let mut hi = n_knee + 10. * self.model.sigma_knee(self.p);
         while self.centrality(hi) > f && hi < 1e300 {
             hi *= 2.;
         }
@@ -580,7 +580,7 @@ pub fn compute(
         source: config.fit_file.clone(),
         impact: impact.map(ImpactProfile::description),
         n_knee,
-        sigma_knee: model.variance(p, n_knee).sqrt(),
+        sigma_knee: model.sigma_knee(p),
         c_knee: calc.centrality(n_knee),
         n_error_samples: n_samples,
         pile_up_probability: model.pile_up_probability(p),

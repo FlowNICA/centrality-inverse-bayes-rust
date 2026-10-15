@@ -36,6 +36,7 @@ pub mod model;
 pub mod numeric;
 pub mod optical;
 pub mod output;
+pub mod profile;
 pub mod table;
 
 pub use centrality::CentralityResult;

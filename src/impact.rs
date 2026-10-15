@@ -15,7 +15,7 @@ const FERMI_POINTS: usize = 20_000;
 const TREE_BINS: usize = 4000;
 
 /// `c_b(b)` and its inverse.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ImpactProfile {
     /// `c_b = πb²/σ_inel`.
     Geometric { sigma_inel: f64 },

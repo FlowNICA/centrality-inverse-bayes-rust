@@ -30,9 +30,11 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use serde::Deserialize;
 
+use crate::config::ImpactParameter;
 use crate::error::Error;
 use crate::numeric::{composite_gauss_legendre, gamma_pq, ln_gamma, normal_cdf, normal_sf};
 use crate::optical::{GlauberMean, GlauberSpec};
+use crate::profile::{Axis, CbProfile, HistogramSpec};
 
 /// Probabilities below this are treated as zero when walking into the tails.
 const TAIL_CUT: f64 = 1e-22;
@@ -82,6 +84,17 @@ pub enum MeanModel {
         #[serde(default)]
         nuclei_file: Option<PathBuf>,
     },
+    /// `n̄ = mean_scale · ⟨n⟩(b)`, with the mean of `n` versus `b` from a 2-D
+    /// histogram of `n` and `b` (e.g. of a model; `x_axis` and `y_axis` say
+    /// which axis holds `"n"` and which `"b"`), and `b(c_b)` from its own
+    /// `impact_parameter` distribution `P(b)`.
+    Histogram {
+        file: PathBuf,
+        hist: String,
+        x_axis: Axis,
+        y_axis: Axis,
+        impact_parameter: ImpactParameter,
+    },
 }
 
 impl MeanModel {
@@ -95,6 +108,27 @@ impl MeanModel {
                 .map(String::from)
                 .to_vec(),
             MeanModel::Glauber { .. } => ["mu", "f"].map(String::from).to_vec(),
+            MeanModel::Histogram { .. } => vec!["mean_scale".to_string()],
+        }
+    }
+
+    /// The 2-D histogram of the `Histogram` mean.
+    pub fn histogram_spec(&self) -> Option<HistogramSpec> {
+        match self {
+            MeanModel::Histogram {
+                file,
+                hist,
+                x_axis,
+                y_axis,
+                impact_parameter,
+            } => Some(HistogramSpec {
+                file: file.clone(),
+                hist: hist.clone(),
+                x_axis: *x_axis,
+                y_axis: *y_axis,
+                impact_parameter: impact_parameter.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -123,13 +157,55 @@ impl MeanModel {
 
 /// Dependence of the variance `σ²(c_b)` on `c_b`; `θ` is the reduced variance
 /// `σ²/n̄` of the most central collisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum VarianceModel {
     /// `σ² = θ · n̄(c_b)`: constant `θ`, variance proportional to the mean
     /// (scenario A of Das et al.; the choice of Rogly et al. and Frankland et al.).
     Proportional,
     /// `σ² = θ · n̄(0)`: constant width (scenario B of Das et al.).
     Constant,
+    /// `σ² = variance_scale · Var(n)(b)`, with the variance of `n` versus `b`
+    /// from a 2-D histogram of `n` and `b` and its own `P(b)`, as for the
+    /// `Histogram` mean. The first parameter is then `variance_scale` instead
+    /// of `theta`.
+    Histogram {
+        file: PathBuf,
+        hist: String,
+        x_axis: Axis,
+        y_axis: Axis,
+        impact_parameter: ImpactParameter,
+    },
+}
+
+impl VarianceModel {
+    /// Name of the first parameter, which scales the variance.
+    pub fn param_name(&self) -> &'static str {
+        match self {
+            VarianceModel::Histogram { .. } => "variance_scale",
+            _ => "theta",
+        }
+    }
+
+    /// The 2-D histogram of the `Histogram` variance.
+    pub fn histogram_spec(&self) -> Option<HistogramSpec> {
+        match self {
+            VarianceModel::Histogram {
+                file,
+                hist,
+                x_axis,
+                y_axis,
+                impact_parameter,
+            } => Some(HistogramSpec {
+                file: file.clone(),
+                hist: hist.clone(),
+                x_axis: *x_axis,
+                y_axis: *y_axis,
+                impact_parameter: impact_parameter.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// How a histogram bin is compared to the model density.
@@ -156,11 +232,16 @@ pub struct Model {
     pub pile_up: bool,
     /// `⟨N_part⟩` and `⟨N_coll⟩` versus `c_b` for the `Glauber` mean.
     glauber: Option<Arc<GlauberMean>>,
+    /// `⟨n⟩` versus `c_b` for the `Histogram` mean.
+    mean_profile: Option<Arc<CbProfile>>,
+    /// `Var(n)` versus `c_b` for the `Histogram` variance.
+    variance_profile: Option<Arc<CbProfile>>,
 }
 
 impl Model {
     /// The model; for the `Glauber` mean this computes the optical Glauber
-    /// `⟨N_part⟩` and `⟨N_coll⟩` (a fraction of a second).
+    /// `⟨N_part⟩` and `⟨N_coll⟩` (a fraction of a second), for the
+    /// `Histogram` mean and variance it reads the histograms and their `P(b)`.
     pub fn new(
         kernel: Kernel,
         mean: MeanModel,
@@ -171,13 +252,24 @@ impl Model {
             Some(spec) => Some(Arc::new(spec.build()?.mean_table())),
             None => None,
         };
+        let profile =
+            |spec: Option<HistogramSpec>| spec.map(|spec| spec.build().map(Arc::new)).transpose();
+        let mean_profile = profile(mean.histogram_spec())?;
+        let variance_profile = profile(variance.histogram_spec())?;
         Ok(Model {
             kernel,
             mean,
             variance,
             pile_up,
             glauber,
+            mean_profile,
+            variance_profile,
         })
+    }
+
+    /// `⟨n⟩` versus `c_b` of the `Histogram` mean.
+    pub fn mean_profile(&self) -> Option<&CbProfile> {
+        self.mean_profile.as_deref()
     }
 
     /// The optical Glauber `⟨N_part⟩` and `⟨N_coll⟩` of the `Glauber` mean.
@@ -185,10 +277,14 @@ impl Model {
         self.glauber.as_deref()
     }
 
-    /// Names of the parameters for the mean model and pile-up, in the order
-    /// of the parameter vector.
-    pub fn param_names_for(mean: &MeanModel, pile_up: bool) -> Vec<String> {
-        let mut names = vec!["theta".to_string()];
+    /// Names of the parameters for the mean and variance models and pile-up,
+    /// in the order of the parameter vector.
+    pub fn param_names_for(
+        mean: &MeanModel,
+        variance: &VarianceModel,
+        pile_up: bool,
+    ) -> Vec<String> {
+        let mut names = vec![variance.param_name().to_string()];
         names.extend(mean.param_names());
         if pile_up {
             names.push("p".into());
@@ -198,7 +294,7 @@ impl Model {
 
     /// Names of the parameters, in the order of the parameter vector.
     pub fn param_names(&self) -> Vec<String> {
-        Self::param_names_for(&self.mean, self.pile_up)
+        Self::param_names_for(&self.mean, &self.variance, self.pile_up)
     }
 
     pub fn n_params(&self) -> usize {
@@ -241,6 +337,13 @@ impl Model {
                     .at(cb);
                 p[1] * (p[2] * npart + (1. - p[2]) * ncoll)
             }
+            MeanModel::Histogram { .. } => {
+                p[1] * self
+                    .mean_profile
+                    .as_ref()
+                    .expect("the histogram profile is built by Model::new")
+                    .mean(cb)
+            }
         }
     }
 
@@ -249,18 +352,30 @@ impl Model {
         self.mean(p, 0.)
     }
 
-    /// Variance `σ²(c_b)` for the mean `mean = n̄(c_b)`.
-    pub fn variance(&self, p: &[f64], mean: f64) -> f64 {
+    /// Variance `σ²(c_b)` at `c_b`, where the mean is `mean = n̄(c_b)`.
+    pub fn variance(&self, p: &[f64], cb: f64, mean: f64) -> f64 {
         match self.variance {
             VarianceModel::Proportional => p[0] * mean,
             VarianceModel::Constant => p[0] * self.n_knee(p),
+            VarianceModel::Histogram { .. } => {
+                p[0] * self
+                    .variance_profile
+                    .as_ref()
+                    .expect("the histogram profile is built by Model::new")
+                    .variance(cb)
+            }
         }
+    }
+
+    /// Width `σ(0)` of the most central collisions.
+    pub fn sigma_knee(&self, p: &[f64]) -> f64 {
+        self.variance(p, 0., self.n_knee(p)).sqrt()
     }
 
     /// Kernel `P(n|c_b)` at `c_b`.
     pub fn kernel_at(&self, p: &[f64], cb: f64) -> NodeKernel {
         let mean = self.mean(p, cb);
-        NodeKernel::new(self.kernel, mean, self.variance(p, mean))
+        NodeKernel::new(self.kernel, mean, self.variance(p, cb, mean))
     }
 
     /// Whether `p` is a valid parameter vector (finite, positive `θ` and mean,
@@ -278,6 +393,7 @@ impl Model {
                 p[1] >= 0. && p[2] >= 0. && p[1] + p[2] > 0. && p[3] > 0. && p[4] > 0.
             }
             MeanModel::Glauber { .. } => p[1] > 0. && (0. ..=1.).contains(&p[2]),
+            MeanModel::Histogram { .. } => p[1] > 0.,
         }
     }
 
@@ -412,8 +528,7 @@ impl Model {
     /// triangles are integrated over the bins. The bins are always integrated
     /// (`bin_model` does not apply).
     pub fn pile_up_by_convolution(&self, p: &[f64], quad: &Quadrature, edges: &[f64]) -> Vec<f64> {
-        let n_knee = self.n_knee(p);
-        let mut x_top = n_knee + 10. * self.variance(p, n_knee).sqrt();
+        let mut x_top = self.n_knee(p) + 10. * self.sigma_knee(p);
         for _ in 0..64 {
             if self.centrality(p, quad, x_top) < 1e-10 {
                 break;
@@ -533,9 +648,19 @@ impl fmt::Display for Kernel {
     }
 }
 
+/// The RON form of the configuration, e.g. `Proportional` or
+/// `Histogram(file: "m.root", hist: "h", x_axis: "b", y_axis: "n",
+/// impact_parameter: Geometric(sigma_inel: 685.0))`.
 impl fmt::Display for VarianceModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
+        match self {
+            VarianceModel::Proportional => f.write_str("Proportional"),
+            VarianceModel::Constant => f.write_str("Constant"),
+            VarianceModel::Histogram { .. } => {
+                let spec = self.histogram_spec().expect("Histogram variance");
+                write!(f, "Histogram({})", spec.ron_fields())
+            }
+        }
     }
 }
 
@@ -556,6 +681,10 @@ impl fmt::Display for MeanModel {
                 let spec = self.glauber_spec().expect("Glauber mean");
                 write!(f, "Glauber({})", spec.ron_fields())
             }
+            MeanModel::Histogram { .. } => {
+                let spec = self.histogram_spec().expect("Histogram mean");
+                write!(f, "Histogram({})", spec.ron_fields())
+            }
         }
     }
 }
@@ -575,14 +704,12 @@ impl FromStr for Kernel {
     }
 }
 
+/// Parses the RON form written by `Display`.
 impl FromStr for VarianceModel {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        parse_name(
-            &[VarianceModel::Proportional, VarianceModel::Constant],
-            s,
-            "variance model",
-        )
+        ron::from_str(s.trim())
+            .map_err(|e| Error::Input(format!("unknown variance model '{s}': {e}")))
     }
 }
 
@@ -851,9 +978,11 @@ mod tests {
                     Model {
                         kernel,
                         mean: MeanModel::ExpPoly(3),
-                        variance,
+                        variance: variance.clone(),
                         pile_up: false,
                         glauber: None,
+                        mean_profile: None,
+                        variance_profile: None,
                     },
                     vec![1.2, 200., 3.5, 0.8, 1.6],
                 ));
@@ -864,6 +993,8 @@ mod tests {
                         variance,
                         pile_up: false,
                         glauber: None,
+                        mean_profile: None,
+                        variance_profile: None,
                     },
                     vec![0.8, 150., 4., 1.2, 1.5],
                 ));
@@ -912,6 +1043,38 @@ mod tests {
         let text = glauber.to_string();
         assert_eq!(text.parse::<MeanModel>().unwrap(), glauber, "{text}");
         assert_eq!(glauber.param_names(), ["mu", "f"]);
+        /* so do the Histogram mean and variance */
+        let mean = MeanModel::Histogram {
+            file: "model \"x\".root".into(),
+            hist: "h2_n_b".into(),
+            x_axis: Axis::B,
+            y_axis: Axis::N,
+            impact_parameter: ImpactParameter::Fermi {
+                sigma_inel: None,
+                b0: Some(14.5),
+                width: 0.4,
+            },
+        };
+        let text = mean.to_string();
+        assert_eq!(text.parse::<MeanModel>().unwrap(), mean, "{text}");
+        let variance = VarianceModel::Histogram {
+            file: "m.root".into(),
+            hist: "h".into(),
+            x_axis: Axis::N,
+            y_axis: Axis::B,
+            impact_parameter: ImpactParameter::Histogram {
+                file: "b.root".into(),
+                hist: "hB".into(),
+            },
+        };
+        let text = variance.to_string();
+        assert_eq!(text.parse::<VarianceModel>().unwrap(), variance, "{text}");
+        assert_eq!(
+            Model::param_names_for(&mean, &variance, true),
+            ["variance_scale", "mean_scale", "p"]
+        );
+        /* a missing histogram file is reported */
+        assert!(Model::new(Kernel::Gamma, mean, VarianceModel::Proportional, false).is_err());
     }
 
     #[test]
@@ -922,6 +1085,8 @@ mod tests {
             variance: VarianceModel::Proportional,
             pile_up: false,
             glauber: None,
+            mean_profile: None,
+            variance_profile: None,
         };
         let p = [1., 100., 2., 1.];
         assert!(close(m.mean(&p, 0.5), 100. * (-1.25f64).exp(), 1e-14));
@@ -1000,7 +1165,7 @@ mod tests {
              * the first bin, whose center overestimates its mean */
             let tolerance = match m.variance {
                 VarianceModel::Proportional => 1e-3,
-                VarianceModel::Constant => 5e-3,
+                _ => 5e-3,
             };
             assert!(
                 close(mean2, 2. * mean1, tolerance),

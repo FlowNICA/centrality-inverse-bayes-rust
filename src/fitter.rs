@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use crate::config::{FitConfig, FitMethod, Normalization, ParamConfig};
 use crate::data::DataHistogram;
 use crate::error::{Error, Result};
-use crate::model::{BinModel, MeanModel, Model, Quadrature};
+use crate::model::{BinModel, MeanModel, Model, Quadrature, VarianceModel};
 use crate::numeric::solve;
 
 /// Statistic returned for parameters where the model is undefined.
@@ -191,13 +191,17 @@ impl Fitter {
             self.quad.len()
         )));
         if self.config.normalization == Normalization::Free
-            && !matches!(self.model.mean, MeanModel::Glauber { .. })
+            && !matches!(
+                self.model.mean,
+                MeanModel::Glauber { .. } | MeanModel::Histogram { .. }
+            )
         {
             eprintln!(
                 "Warning: with normalization Free the number of all events, and with it the \
                  trigger efficiency and all centrality percents, depends on the extrapolation \
                  of n(c_b) below the fit range, which the {} mean does not constrain (on toys \
-                 it is off by 5-30% with an equally good fit). Prefer a Glauber mean, or \
+                 it is off by 5-30% with an equally good fit). Prefer a Glauber or Histogram \
+                 mean, or \
                  Efficiency(eps) with a known trigger efficiency, and check the stability \
                  against fit_min",
                 self.model.mean
@@ -317,7 +321,7 @@ impl Fitter {
             None => single_counts.clone(),
         };
         let n_knee = self.model.n_knee(&values);
-        let sigma_knee = self.model.variance(&values, n_knee).sqrt();
+        let sigma_knee = self.model.sigma_knee(&values);
         let underflow = self.data.hist.contents[0];
         let data_below = underflow + self.data.counts[..lo].iter().sum::<f64>();
         let fit_below: f64 = model_counts[..lo].iter().sum();
@@ -410,7 +414,8 @@ impl Fitter {
     }
 
     /// Start points on a grid of `θ` (relative width `σ(0)/n_knee` from 0.4%
-    /// to 60%) and of the scale of the mean.
+    /// to 60%), or of `variance_scale` from 0.05 to 20 for the `Histogram`
+    /// variance, and of the scale of the mean.
     fn width_scan(
         &self,
         start: &[f64],
@@ -420,12 +425,23 @@ impl Fitter {
         user: &[ParamConfig],
         progress: &(dyn Fn(FitProgress) + Sync),
     ) -> Vec<Vec<f64>> {
-        /* relative width σ(0)/n_knee and scale of the mean */
-        let widths: Vec<f64> = if theta_given {
+        /* the first parameter, from the relative width σ(0)/n_knee (σ(0)² =
+         * θ n̄(0) for both variance models), or around the variance of the
+         * histogram, which is taken to scale like the mean */
+        let first: Vec<f64> = if theta_given {
             vec![f64::NAN]
         } else {
             (0..16)
-                .map(|i| 0.004 * (0.6f64 / 0.004).powf(i as f64 / 15.))
+                .map(|i| {
+                    let t = i as f64 / 15.;
+                    match self.model.variance {
+                        VarianceModel::Proportional | VarianceModel::Constant => {
+                            let r = 0.004 * (0.6f64 / 0.004).powf(t);
+                            r * r * n_knee
+                        }
+                        VarianceModel::Histogram { .. } => 0.05 * (20f64 / 0.05).powf(t),
+                    }
+                })
                 .collect()
         };
         let scales: &[f64] = if mean_given {
@@ -435,17 +451,16 @@ impl Fitter {
         };
         progress(FitProgress::Stage(format!(
             "Scanning {} start points",
-            widths.len() * scales.len()
+            first.len() * scales.len()
         )));
-        widths
+        first
             .iter()
-            .flat_map(|&r| {
+            .flat_map(|&v| {
                 scales.iter().map(move |&s| {
                     let mut p = start.to_vec();
                     scale_mean(&self.model, &mut p, s);
-                    if r.is_finite() {
-                        /* σ(0)² = θ n̄(0) for both variance models */
-                        p[0] = r * r * n_knee * s;
+                    if v.is_finite() {
+                        p[0] = v * s;
                     }
                     clamp_to_limits(&mut p, user);
                     p
@@ -484,6 +499,10 @@ impl Fitter {
                 &points,
                 self.model.glauber_table().expect("Glauber table"),
             )),
+            MeanModel::Histogram { .. } => {
+                let profile = self.model.mean_profile().expect("histogram profile");
+                Ok(vec![prefit_scale(&points, |c| profile.mean(c))])
+            }
         }
     }
 
@@ -572,6 +591,17 @@ fn prefit_glauber(points: &[(f64, f64)], table: &crate::optical::GlauberMean) ->
     vec![if den > 0. { num / den } else { 1. }, f]
 }
 
+/// `n̄ = s g(c)` fitted to the points: `s` minimizes `Σ ((x - s g) / x)²`.
+fn prefit_scale(points: &[(f64, f64)], g: impl Fn(f64) -> f64) -> f64 {
+    let (mut num, mut den) = (0., 0.);
+    for &(c, x) in points {
+        let u = g(c) / x;
+        num += u;
+        den += u * u;
+    }
+    if den > 0. { num / den } else { 1. }
+}
+
 /// `n̄ = x_max (1 - c^α)^γ + x_min` fitted to the logarithm of the points.
 fn prefit_indra(points: &[(f64, f64)]) -> Vec<f64> {
     let x_top = points
@@ -624,7 +654,7 @@ fn scale_mean(model: &Model, p: &mut [f64], s: f64) {
             p[1] *= s;
             p[2] *= s;
         }
-        MeanModel::Glauber { .. } => p[1] *= s,
+        MeanModel::Glauber { .. } | MeanModel::Histogram { .. } => p[1] *= s,
     }
 }
 
@@ -670,7 +700,7 @@ fn param_specs(
             let positive = match model.mean {
                 _ if is_pile_up => true,
                 MeanModel::ExpPoly(_) => i <= 1,
-                MeanModel::Indra | MeanModel::Glauber { .. } => true,
+                MeanModel::Indra | MeanModel::Glauber { .. } | MeanModel::Histogram { .. } => true,
             };
             let default_step = match (&model.mean, i) {
                 _ if is_pile_up => 0.5 * v.abs().max(1e-4),

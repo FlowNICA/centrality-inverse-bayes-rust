@@ -34,11 +34,21 @@
         //                inelastic events from the optical Glauber model (nuclei and cross
         //                section as for impact_parameter: Glauber below)
         //                parameters: theta, mu, f (f limited to [0, 1])
+        //   Histogram(file: "~/model.root", hist: "h2_track_multiplicity_b", x_axis: "b", y_axis: "n",
+        //             impact_parameter: Histogram(file: "~/model.root", hist: "h1_b"))
+        //              - mean_scale * <n>(b), the mean of n in each bin of b of a 2-D histogram
+        //                (x_axis/y_axis: which axis holds "n" and which "b"); b(c_b) from its
+        //                own impact_parameter (required; choices as in the centrality section)
+        //                parameters: theta, mean_scale
         mean: ExpPoly(3),
 
         // Variance of n versus c_b:
         //   Proportional - theta * mean(c_b)  (constant reduced variance, the usual choice)
         //   Constant     - theta * mean(0)    (constant width)
+        //   Histogram(file: "~/model.root", hist: "h2_track_multiplicity_b", x_axis: "b", y_axis: "n",
+        //             impact_parameter: Geometric(sigma_inel: 685.0))
+        //                - variance_scale * Var(n)(b), from a 2-D histogram with its own P(b),
+        //                  as for the mean; the parameter variance_scale replaces theta
         variance: Proportional,
 
         // Pile-up: with probability p (fit parameter "p"), a recorded event is the
@@ -101,7 +111,8 @@
         //   Exact    - exact values with the nominal fractions of events above them
         borders: BinEdges,
 
-        // Impact parameter distribution P(b) of inelastic events (omit to get c_b only):
+        // Impact parameter distribution P(b) of inelastic events (omit to get c_b only)
+        // (the same choices serve as impact_parameter of the Histogram mean and variance):
         //   Geometric(sigma_inel: 685.0)                 - c_b = pi b^2 / sigma_inel, sigma in fm^2
         //   Fermi(sigma_inel: 685.0, width: 0.4)         - 2 pi b / (1 + exp((b - b0)/width)),
         //   Fermi(b0: 14.5, width: 0.4)                    b0 from sigma_inel or given

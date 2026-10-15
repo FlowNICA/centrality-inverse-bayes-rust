@@ -47,11 +47,13 @@ described by a kernel `P(n|c_b)` with mean `n̄(c_b)` and variance `σ²(c_b)`:
 | `ExpPoly(J)` (default `J = 3`) | `n_knee · exp(-Σ_{j=1}^{J} a_j c_b^j)` | `n_knee, a1..aJ` |
 | `Indra` | `x_max · (1 - c_b^α)^γ + x_min` | `x_max, x_min, alpha, gamma` |
 | `Glauber(...)` | `μ · [f ⟨N_part⟩(c_b) + (1 - f) ⟨N_coll⟩(c_b)]` from the optical Glauber model | `mu, f` |
+| `Histogram(...)` | `mean_scale · ⟨n⟩(b(c_b))` from a 2-D histogram of `n` and `b` | `mean_scale` |
 
 | `variance` | `σ²(c_b)` |
 |------------|-----------|
 | `Proportional` (default) | `θ · n̄(c_b)` (constant reduced variance, scenario A of Das et al.) |
 | `Constant` | `θ · n̄(0)` (constant width, scenario B) |
+| `Histogram(...)` | `variance_scale · Var(n)(b(c_b))` from a 2-D histogram of `n` and `b`; `variance_scale` replaces `θ` |
 
 The `Glauber` mean is the two-component model of the MC-Glauber fit of
 centrality-glauber-rust (`mode: "Default"`), with the mean numbers of
@@ -82,7 +84,64 @@ fluctuations. On a toy of 10⁶ events generated with this model (Au+Au, 30 mb,
 Carlo Glauber fit, the fluctuations come from the kernel (`θ`), not from
 event-by-event `N_part` and `N_coll`.
 
-The parameter vector is `theta` followed by the mean parameters. `n_knee = n̄(0)`
+### Mean and variance from a histogram of `n` versus `b`
+
+The `Histogram` mean and variance take the dependence on the impact
+parameter from a 2-D histogram of `n` and `b` (fm), e.g. of a model
+transported through the detector simulation, with one fit parameter each:
+
+```ron
+mean: Histogram(
+    file: "~/model.root",
+    hist: "h2_track_multiplicity_b",
+    x_axis: "b",
+    y_axis: "n",
+    impact_parameter: Histogram(file: "~/model.root", hist: "h1_b"),
+),
+variance: Histogram(
+    file: "~/model.root",
+    hist: "h2_track_multiplicity_b",
+    x_axis: "b",
+    y_axis: "n",
+    impact_parameter: Glauber(nucleus_a: "Xe", nucleus_b: "Cs", sqrt_snn: 3.26),
+),
+```
+
+`x_axis` and `y_axis` say which axis holds `"n"` and which `"b"` (both
+orders work). In each bin of `b` the mean and variance of `n` are computed
+from the bin centers of `n` (for integer multiplicities in bins `[k, k + 1)`
+that is `k + 0.5`, as in the model, where a bin is the integral of a
+continuous density); they are interpolated linearly between the bin centers
+of `b` and constant beyond the first and last filled bins (empty bins are
+skipped). `c_b` is turned into `b` with the distribution `P(b)` given in
+`impact_parameter` of each of them (required, with the same choices as
+[`impact_parameter`](#define-centrality) of `define-centrality`), so the mean,
+the variance and the classes can each use their own `P(b)`, e.g. as a
+systematic variation. Both are stored with the model in the fit file. Then
+
+```
+n̄(c_b)  = mean_scale     · ⟨n⟩(b(c_b))
+σ²(c_b) = variance_scale · Var(n)(b(c_b))
+```
+
+so that, if the model describes the data, both scales are 1 (e.g. a
+different efficiency shows up as `mean_scale`). The two can be combined with
+the other choices, e.g. `ExpPoly` with a `Histogram` variance (parameters
+`variance_scale, n_knee, a1, ...`) or a `Histogram` mean with `Proportional`
+variance (`theta, mean_scale`). As for the `Glauber` mean, the shape of
+`n̄(c_b)` is fixed, so `normalization: Free` gives no warning. The start value of
+`mean_scale` comes from the measured centrality in the limit of vanishing
+fluctuations, and `variance_scale` is scanned from 0.05 to 20.
+
+On toys (10⁶ events with a known `n̄(c_b)` and Gamma kernel filled into the
+2-D histogram, 3·10⁵ events fitted with `normalization: Free`), both scales
+are 1 within 3%, `N` within 2% and `<b>` of the classes within 0.1 fm of the
+truth. The kernel shape stays a Gamma (or Gauss) distribution with these
+moments: if the distribution of `n` at fixed `b` of the model is not of this
+shape, the fit is poor even with both scales at 1.
+
+The parameter vector is `theta` (or `variance_scale`) followed by the mean
+parameters. `n_knee = n̄(0)`
 is the knee of the distribution, `σ(0) = √(θ n_knee)` the width of the
 fluctuations in the most central collisions, and `c_knee = P(n > n_knee)` the
 fraction of events above the knee, a measure of the centrality resolution.
@@ -210,8 +269,8 @@ fit: (
     fit_min: 10,                  // fit range: bins with centers in [fit_min, fit_max]
     // fit_max: 400,
     kernel: Gamma,                // Gamma or Gauss
-    mean: ExpPoly(3),             // ExpPoly(J), Indra or Glauber(...)
-    variance: Proportional,       // Proportional or Constant
+    mean: ExpPoly(3),             // ExpPoly(J), Indra, Glauber(...) or Histogram(...)
+    variance: Proportional,       // Proportional, Constant or Histogram(...)
     pile_up: false,               // fit pile-up with probability p
     fit_method: Likelihood,       // Likelihood or Chi2
     normalization: Data,          // Data, Efficiency(eps) or Free
@@ -244,8 +303,9 @@ fit: (
   - `Free`: `N` is fitted from the bins in the fit range (profiled
     analytically) and the model extrapolates below it.
 - `params`: start value (`value`), step, limits (`min`, `max`) and `fixed` for
-  any parameter, by name (`theta`, `n_knee`, `a1`, ..., or `x_max`, `x_min`,
-  `alpha`, `gamma`, or `mu`, `f`). By default `theta`, `n_knee`, `x_max`,
+  any parameter, by name (`theta` or `variance_scale`, `n_knee`, `a1`, ..., or
+  `x_max`, `x_min`, `alpha`, `gamma`, or `mu`, `f`, or `mean_scale`). By
+  default `theta`, `variance_scale`, `mean_scale`, `n_knee`, `x_max`,
   `x_min`, `alpha`, `gamma` and `mu` are limited to positive values, and `f`
   to `[0, 1]`.
 - `pile_up`: adds the parameter `p` (default limits `[0, 0.5]`, it can be
@@ -485,7 +545,8 @@ section), so `N`, and with it `ε`, has to be known:
 
   So `Free` needs a mean model that describes the peripheral events, such as
   the `Glauber` mean when the data follow it (a wrong one shows in the fit
-  quality); with `ExpPoly` or `Indra` the fit prints a warning. Check the
+  quality), or the `Histogram` mean from a model; with `ExpPoly` or `Indra`
+  the fit prints a warning. Check the
   stability of `N` against `fit_min` in any case.
 
 The fit prints the trigger efficiency, data over fit, for all events and

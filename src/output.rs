@@ -192,7 +192,11 @@ pub fn write_fit(
         .map(|i| i as f64 / (CB_GRAPH_POINTS - 1) as f64)
         .collect();
     let mean: Vec<f64> = cb.iter().map(|&c| model.mean(p, c)).collect();
-    let sigma: Vec<f64> = mean.iter().map(|&m| model.variance(p, m).sqrt()).collect();
+    let sigma: Vec<f64> = cb
+        .iter()
+        .zip(&mean)
+        .map(|(&c, &m)| model.variance(p, c, m).sqrt())
+        .collect();
     let mean_graph = graph(
         "Mean_VS_Cb",
         "mean of n vs c_b (errors: sigma);c_b;n",

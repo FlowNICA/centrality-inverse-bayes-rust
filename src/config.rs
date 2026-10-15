@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config_file::{expand_home, read_section};
 use crate::error::{Error, Result};
@@ -153,7 +153,7 @@ pub struct FitConfig {
 
 /// Impact parameter distribution `P(b)` of inelastic events, used to turn
 /// `c_b` into `b`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum ImpactParameter {
     /// `P(b) = 2πb/σ_inel` for `b < √(σ_inel/π)`: `c_b = πb²/σ_inel`.
@@ -365,14 +365,38 @@ impl FitConfig {
         {
             *file = expand_home(file);
         }
+        if let MeanModel::Histogram {
+            file,
+            impact_parameter,
+            ..
+        } = &mut config.mean
+        {
+            *file = expand_home(file);
+            impact_parameter.expand_home();
+        }
+        if let VarianceModel::Histogram {
+            file,
+            impact_parameter,
+            ..
+        } = &mut config.variance
+        {
+            *file = expand_home(file);
+            impact_parameter.expand_home();
+        }
         config.validate()?;
         Ok(config)
     }
 
     /// The model; for the `Glauber` mean this computes the optical Glauber
-    /// table (see [`Model::new`]).
+    /// table, for the `Histogram` mean and variance it reads the histograms
+    /// and their `P(b)` (see [`Model::new`]).
     pub fn model(&self) -> Result<Model> {
-        Model::new(self.kernel, self.mean.clone(), self.variance, self.pile_up)
+        Model::new(
+            self.kernel,
+            self.mean.clone(),
+            self.variance.clone(),
+            self.pile_up,
+        )
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -385,6 +409,14 @@ impl FitConfig {
         if let Some(spec) = self.mean.glauber_spec() {
             spec.validate()
                 .map_err(|e| Error::Config(format!("mean: {e}")))?;
+        }
+        if let Some(spec) = self.mean.histogram_spec() {
+            spec.validate()
+                .map_err(|e| Error::Config(format!("mean: {e}")))?;
+        }
+        if let Some(spec) = self.variance.histogram_spec() {
+            spec.validate()
+                .map_err(|e| Error::Config(format!("variance: {e}")))?;
         }
         if let (Some(lo), Some(hi)) = (self.fit_min, self.fit_max)
             && !(lo < hi)
@@ -408,12 +440,14 @@ impl FitConfig {
         if self.n_threads == Some(0) {
             return err("n_threads must be positive".into());
         }
-        let names = Model::param_names_for(&self.mean, self.pile_up);
+        let names = Model::param_names_for(&self.mean, &self.variance, self.pile_up);
         for (name, p) in &self.params {
             if !names.contains(name) {
                 return err(format!(
-                    "unknown parameter '{name}' for mean model {}, expected one of: {}",
+                    "unknown parameter '{name}' for mean model {} and variance model {}, \
+                     expected one of: {}",
                     self.mean,
+                    self.variance,
                     names.join(", ")
                 ));
             }
@@ -470,17 +504,8 @@ impl CentralityConfig {
         let mut config: CentralityConfig = read_section(path, "centrality")?;
         config.fit_file = expand_home(&config.fit_file);
         config.out_dir = expand_home(&config.out_dir);
-        if let Some(ImpactParameter::Histogram { file, .. } | ImpactParameter::Tree { file, .. }) =
-            &mut config.impact_parameter
-        {
-            *file = expand_home(file);
-        }
-        if let Some(ImpactParameter::Glauber {
-            nuclei_file: Some(file),
-            ..
-        }) = &mut config.impact_parameter
-        {
-            *file = expand_home(file);
+        if let Some(ip) = &mut config.impact_parameter {
+            ip.expand_home();
         }
         config.validate()?;
         Ok(config)
@@ -533,14 +558,38 @@ impl CentralityConfig {
             return err("n_threads must be positive".into());
         }
         match &self.impact_parameter {
-            Some(ImpactParameter::Geometric { sigma_inel }) if !(*sigma_inel > 0.) => {
+            Some(ip) => ip.validate(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl ImpactParameter {
+    /// Expands a leading `~/` in the file names.
+    pub fn expand_home(&mut self) {
+        match self {
+            ImpactParameter::Histogram { file, .. } | ImpactParameter::Tree { file, .. } => {
+                *file = expand_home(file);
+            }
+            ImpactParameter::Glauber {
+                nuclei_file: Some(file),
+                ..
+            } => *file = expand_home(file),
+            _ => {}
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let err = |m: String| Err(Error::Config(m));
+        match self {
+            ImpactParameter::Geometric { sigma_inel } if !(*sigma_inel > 0.) => {
                 err(format!("sigma_inel must be positive, got {sigma_inel}"))
             }
-            Some(ImpactParameter::Fermi {
+            ImpactParameter::Fermi {
                 sigma_inel,
                 b0,
                 width,
-            }) => match (sigma_inel, b0) {
+            } => match (sigma_inel, b0) {
                 _ if !(*width > 0.) => err(format!("Fermi width must be positive, got {width}")),
                 (Some(_), Some(_)) | (None, None) => {
                     err("Fermi impact parameter needs exactly one of sigma_inel and b0".into())
@@ -551,14 +600,14 @@ impl CentralityConfig {
                 (None, Some(b)) if !(*b > 0.) => err(format!("b0 must be positive, got {b}")),
                 _ => Ok(()),
             },
-            Some(ImpactParameter::Glauber {
+            ImpactParameter::Glauber {
                 nucleus_a,
                 nucleus_b,
                 sigma_nn,
                 sigma_np,
                 sqrt_snn,
                 nuclei_file,
-            }) => crate::optical::GlauberSpec {
+            } => crate::optical::GlauberSpec {
                 nucleus_a: nucleus_a.clone(),
                 nucleus_b: nucleus_b.clone(),
                 sigma_nn: *sigma_nn,
@@ -608,6 +657,52 @@ mod tests {
             },
         );
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn histogram_models_have_their_own_impact_parameter() {
+        let dir = std::env::temp_dir().join(format!("cib-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.ron");
+        let write = |fit: &str| {
+            std::fs::write(
+                &path,
+                format!(r#"(fit: (data_file: "d.root", data_hist: "h", {fit}))"#),
+            )
+            .unwrap();
+            FitConfig::from_ron_file(&path)
+        };
+        let c = write(
+            r#"mean: Histogram(file: "~/m.root", hist: "h2", x_axis: "b", y_axis: "n",
+                   impact_parameter: Histogram(file: "~/b.root", hist: "hB")),
+               variance: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n",
+                   impact_parameter: Geometric(sigma_inel: 685.0))"#,
+        )
+        .unwrap();
+        let mean = c.mean.histogram_spec().unwrap();
+        assert!(!mean.file.starts_with("~"));
+        match mean.impact_parameter {
+            ImpactParameter::Histogram { file, .. } => assert!(!file.starts_with("~")),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            c.variance.histogram_spec().unwrap().impact_parameter,
+            ImpactParameter::Geometric { sigma_inel: 685. }
+        );
+        /* missing or invalid P(b), same axis twice, unknown axis */
+        let bad = [
+            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n")"#,
+            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n",
+                   impact_parameter: Geometric(sigma_inel: -1.0))"#,
+            r#"variance: Histogram(file: "m.root", hist: "h2", x_axis: "n", y_axis: "n",
+                   impact_parameter: Geometric(sigma_inel: 685.0))"#,
+            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "x", y_axis: "n",
+                   impact_parameter: Geometric(sigma_inel: 685.0))"#,
+        ];
+        for text in bad {
+            assert!(write(text).is_err(), "{text}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
