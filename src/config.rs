@@ -594,8 +594,7 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
-        /* exactly one of sigma_nn and sqrt_snn; sqrt_snn from 2.02 to 3.38 GeV
-         * (Bystricky tables) or from 10 GeV */
+        /* exactly one of sigma_nn and sqrt_snn; sqrt_snn from 2.0223 GeV */
         assert!(
             parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au")"#)
                 .unwrap()
@@ -608,7 +607,7 @@ mod tests {
             .unwrap()
         };
         assert!(sqrt_snn(2.2).is_ok() && sqrt_snn(3.).is_ok() && sqrt_snn(200.).is_ok());
-        assert!(sqrt_snn(2.).is_err() && sqrt_snn(5.).is_err());
+        assert!(sqrt_snn(5.).is_ok() && sqrt_snn(2.).is_err());
         assert!(
             parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 2.4, sigma_np: 20)"#)
                 .unwrap()

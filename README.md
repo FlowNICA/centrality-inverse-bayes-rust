@@ -335,7 +335,7 @@ P(b)      = 2πb P_inel(b) / σ_inel,            σ_inel = ∫ 2πb P_inel(b) db
 impact_parameter: Glauber(
     nucleus_a: "Au",
     nucleus_b: "Au",
-    sigma_nn: 30.0,          // mb; or sqrt_snn: 2.2 (GeV, 2.0223-3.378 or from 10)
+    sigma_nn: 30.0,          // mb; or sqrt_snn: 2.2 (GeV, from 2.0223)
     // sigma_np: 35.0,       // then sigma_nn is the pp cross section
     // nuclei_file: "~/my_nuclei.ron",
 ),
@@ -367,9 +367,25 @@ impact_parameter: Glauber(
     `T = (s - 2m²)/(2m) - m` with the mean nucleon mass `m = 0.93892 GeV`,
     and averaged over the pairs as above. The range is that of the np table
     (`T` = 0.3-4.2 GeV); below it is the pion production threshold
-    (2.016 GeV), where the inelastic cross section vanishes, and between
-    3.378 and 10 GeV there are no np data in the table. For these energies,
-    give `sigma_nn` and `sigma_np`.
+    (2.016 GeV), where the inelastic cross section vanishes: there give
+    `sigma_nn` and `sigma_np`;
+  - from 3.378 to 10 GeV, where the np table has ended, from the measured
+    `σ_pp` of the same table (it extends to `T` = 425 GeV) and
+    `σ_np = r σ_pp`, where the ratio `r` goes linearly in `√s_NN` from its
+    measured value at the end of the np table (1.059) to 1 at 10 GeV. This is
+    an assumption, not data: inelastic np and pp cross sections become equal
+    at high energies, but how fast is not measured in the table. `σ_np` is
+    continuous at 3.378 GeV; at 10 GeV the switch to the parametrization is a
+    step of about 2% in `σ_NN` (29.9 to 30.6 mb), 0.2% in `σ_inel` for
+    Au+Au. The description of `P(b)` says which source was used.
+
+  | `√s_NN`, GeV | `σ_pp`, mb | `σ_np`, mb | Au+Au `σ_NN`, mb | Au+Au `σ_inel`, b |
+  |------|-------|-------|-------|-------|
+  | 3.5  | 28.3  | 29.9 (r = 1.058) | 29.1 | 6.72 |
+  | 4.0  | 29.2  | 30.7 (r = 1.053) | 29.9 | 6.73 |
+  | 7.7  | 29.8  | 30.4 (r = 1.021) | 30.1 | 6.74 |
+  | 9.2  | 29.8  | 30.0 (r = 1.007) | 29.9 | 6.73 |
+  | 10.0 | 30.6 (parametrization) | = `σ_pp` | 30.6 | 6.75 |
 
   Close to the threshold the inelastic cross section, and with it `P(b)` and
   `σ_inel`, changes fast with energy. For Au+Au:

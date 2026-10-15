@@ -462,36 +462,83 @@ pub fn low_energy_range() -> (f64, f64) {
     )
 }
 
-/// Inelastic nucleon-nucleon cross sections (mb) at `√s_NN` (GeV): from 10
-/// GeV the parametrization of arXiv:2011.14909, the same for all pairs
-/// (`(σ, None)`); from 2.02 to 3.38 GeV the measured inelastic pp and np cross
-/// sections of Bystricky et al., J. Physique 48 (1987) 199, Table VI (as in
-/// TGlauberMC and oxy-glauber), linearly interpolated in the kinetic energy of
-/// the beam (`(σ_pp, Some(σ_np))`, σ_nn = σ_pp). Other energies are errors.
-pub fn nn_cross_sections(sqrt_snn: f64) -> Result<(f64, Option<f64>)> {
+/// Inelastic nucleon-nucleon cross sections at some `√s_NN`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NnCrossSections {
+    /// pp (and nn) cross section (mb); the one of all pairs if `np` is `None`.
+    pub pp: f64,
+    /// np cross section (mb).
+    pub np: Option<f64>,
+    /// Where the values come from.
+    pub source: String,
+}
+
+/// Inelastic nucleon-nucleon cross sections at `√s_NN` (GeV):
+///
+/// - from 10 GeV, the parametrization of arXiv:2011.14909, the same for all
+///   pairs;
+/// - from 2.0223 to 3.378 GeV, the measured inelastic pp and np cross sections
+///   of Bystricky et al., J. Physique 48 (1987) 199, Table VI (as in TGlauberMC
+///   and oxy-glauber), linearly interpolated in the kinetic energy of the beam;
+/// - between 3.378 and 10 GeV, where the np table ends, the measured pp cross
+///   section, and `σ_np = r σ_pp` with the ratio `r` going linearly in `√s_NN`
+///   from its measured value at the end of the np table (≈ 1.06) to 1 at
+///   10 GeV. This interpolation of the ratio is an assumption, not data.
+///
+/// Below 2.0223 GeV (the start of the np table, just above the pion production
+/// threshold at 2.016 GeV) there is no inelastic cross section to use.
+pub fn nn_cross_sections(sqrt_snn: f64) -> Result<NnCrossSections> {
     if sqrt_snn >= HIGH_ENERGY_MIN {
-        return Ok((sigma_nn_from_energy(sqrt_snn), None));
+        return Ok(NnCrossSections {
+            pp: sigma_nn_from_energy(sqrt_snn),
+            np: None,
+            source: format!("sqrt_snn = {sqrt_snn} GeV, arXiv:2011.14909"),
+        });
     }
     let (lo, hi) = low_energy_range();
-    if !(lo..=hi).contains(&sqrt_snn) {
-        let reason = if sqrt_snn < lo {
-            "below it the inelastic np cross section is not tabulated: the \
-             pion production threshold is at 2.016 GeV"
-        } else {
-            "there are no inelastic np data between the table and the \
-             high-energy parametrization (from 10 GeV)"
-        };
+    if !(sqrt_snn >= lo) {
         return Err(Error::Config(format!(
-            "sqrt_snn = {sqrt_snn} GeV: the cross sections from sqrt_snn are \
-             available from {lo:.4} to {hi:.4} GeV (Bystricky tables) and from \
-             10 GeV; {reason}. Give sigma_nn (and sigma_np) instead"
+            "sqrt_snn = {sqrt_snn} GeV: the cross sections from sqrt_snn start at \
+             {lo:.4} GeV, where the measured inelastic np cross section starts (the \
+             pion production threshold is at 2.016 GeV). Give sigma_nn (and \
+             sigma_np) instead"
         )));
     }
     let t = kinetic_energy(sqrt_snn);
-    Ok((
-        interpolate(&PP_T, &PP_SIGMA, t),
-        Some(interpolate(&NP_T, &NP_SIGMA, t)),
-    ))
+    let pp = interpolate(&PP_T, &PP_SIGMA, t);
+    if sqrt_snn <= hi {
+        let np = interpolate(&NP_T, &NP_SIGMA, t);
+        return Ok(NnCrossSections {
+            pp,
+            np: Some(np),
+            source: format!(
+                "sqrt_snn = {sqrt_snn} GeV (T = {t:.4} GeV): sigma_pp = {pp:.3} mb, \
+                 sigma_np = {np:.3} mb from Bystricky et al."
+            ),
+        });
+    }
+    let ratio = np_pp_ratio(sqrt_snn);
+    let np = ratio * pp;
+    Ok(NnCrossSections {
+        pp,
+        np: Some(np),
+        source: format!(
+            "sqrt_snn = {sqrt_snn} GeV (T = {t:.4} GeV): sigma_pp = {pp:.3} mb from \
+             Bystricky et al., sigma_np = {ratio:.4} sigma_pp = {np:.3} mb with the \
+             np/pp ratio interpolated from the end of the np table ({hi:.3} GeV) to \
+             1 at 10 GeV (an assumption)"
+        ),
+    })
+}
+
+/// `σ_np / σ_pp` between the end of the np table and 10 GeV: from its value
+/// at the end of the table, linearly in `√s_NN` to 1 at 10 GeV.
+fn np_pp_ratio(sqrt_snn: f64) -> f64 {
+    let (_, hi) = low_energy_range();
+    let t_end = NP_T[NP_T.len() - 1];
+    let r_end = NP_SIGMA[NP_SIGMA.len() - 1] / interpolate(&PP_T, &PP_SIGMA, t_end);
+    let f = ((sqrt_snn - hi) / (HIGH_ENERGY_MIN - hi)).clamp(0., 1.);
+    r_end + (1. - r_end) * f
 }
 
 /// Linear interpolation in a table with ascending `x`.
@@ -570,16 +617,8 @@ impl OpticalGlauber {
                 )));
             }
             (None, Some(e)) => {
-                let (pp, np) = nn_cross_sections(e)?;
-                let source = match np {
-                    Some(np) => format!(
-                        "sqrt_snn = {e} GeV (T = {:.4} GeV): sigma_pp = {pp:.3} mb, \
-                         sigma_np = {np:.3} mb from Bystricky et al.",
-                        kinetic_energy(e)
-                    ),
-                    None => format!("sqrt_snn = {e} GeV, arXiv:2011.14909"),
-                };
-                (pp, np, source)
+                let x = nn_cross_sections(e)?;
+                (x.pp, x.np, x.source)
             }
             _ => {
                 return Err(Error::Config(
@@ -773,29 +812,56 @@ mod tests {
             "{lo} {hi}"
         );
         /* at a table point the values are reproduced */
-        let (pp, np) = nn_cross_sections(sqrt_snn_from_kinetic(0.70)).unwrap();
-        assert!(close(pp, 0.5 * (16.15 + 17.89), 1e-9) && close(np.unwrap(), 9.77, 1e-9));
+        let x = nn_cross_sections(sqrt_snn_from_kinetic(0.70)).unwrap();
+        assert!(close(x.pp, 0.5 * (16.15 + 17.89), 1e-9) && close(x.np.unwrap(), 9.77, 1e-9));
         /* √s_NN = 2.2 GeV is T ≈ 0.700 GeV; 2.4 GeV (Au+Au at 1.23A GeV) */
         assert!(close(kinetic_energy(2.2), 0.6996, 1e-3));
         /* HADES Au+Au at 1.23A GeV: √s_NN = 2.42 GeV */
         assert!(close(sqrt_snn_from_kinetic(1.23), 2.4157, 1e-4));
-        let (pp, np) = nn_cross_sections(2.4).unwrap();
-        assert!((20. ..30.).contains(&pp) && (15. ..25.).contains(&np.unwrap()));
+        let x = nn_cross_sections(2.4).unwrap();
+        assert!((20. ..30.).contains(&x.pp) && (15. ..25.).contains(&x.np.unwrap()));
         /* below the pion threshold and between the table and 10 GeV */
-        for e in [2.0, 1.9, 3.5, 9.9] {
+        for e in [2.0, 1.9] {
             let err = nn_cross_sections(e).unwrap_err().to_string();
             assert!(err.contains("sigma_nn"), "{err}");
         }
-        assert_eq!(nn_cross_sections(200.).unwrap().1, None);
+        assert_eq!(nn_cross_sections(200.).unwrap().np, None);
 
         /* the effective cross section is averaged over the pairs */
         let g = OpticalGlauber::new("Au", "Au", None, None, Some(2.2), None).unwrap();
-        let (pp, np) = nn_cross_sections(2.2).unwrap();
+        let x = nn_cross_sections(2.2).unwrap();
         let (z, n) = (79., 118.);
-        let expected = ((z * z + n * n) * pp + 2. * z * n * np.unwrap()) / (197. * 197.);
+        let expected = ((z * z + n * n) * x.pp + 2. * z * n * x.np.unwrap()) / (197. * 197.);
         assert!(close(g.sigma_nn, expected, 1e-12));
         assert!((12. ..15.).contains(&g.sigma_nn), "{}", g.sigma_nn);
         let description = g.profile().description();
         assert!(description.contains("Bystricky"), "{description}");
+    }
+
+    #[test]
+    fn cross_sections_between_the_np_table_and_10_gev() {
+        let (_, hi) = low_energy_range();
+        /* σ_np is continuous at the end of the np table */
+        let below = nn_cross_sections(hi - 1e-9).unwrap();
+        let above = nn_cross_sections(hi + 1e-9).unwrap();
+        assert!(close(above.pp, below.pp, 1e-6));
+        assert!(close(above.np.unwrap(), below.np.unwrap(), 1e-6));
+        assert!(above.source.contains("assumption"), "{}", above.source);
+        assert!(below.np.unwrap() > 1.04 * below.pp);
+        /* the ratio goes to 1 at 10 GeV, σ_pp follows the pp table */
+        let x = nn_cross_sections(10. - 1e-9).unwrap();
+        assert!(close(x.np.unwrap(), x.pp, 1e-6));
+        let mid = nn_cross_sections(5.).unwrap();
+        let r = mid.np.unwrap() / mid.pp;
+        assert!(r > 1. && r < np_pp_ratio(hi), "{r}");
+        assert!((27. ..31.).contains(&mid.pp), "{}", mid.pp);
+        /* the step to the high-energy parametrization at 10 GeV is about 2% */
+        let high = nn_cross_sections(10.).unwrap();
+        assert!(close(high.pp, x.pp, 0.03), "{} vs {}", high.pp, x.pp);
+        /* NICA energies are accepted */
+        for e in [3.5, 4., 7.7, 9.2] {
+            let g = OpticalGlauber::new("Au", "Au", None, None, Some(e), None).unwrap();
+            assert!((27. ..32.).contains(&g.sigma_nn), "{e}: {}", g.sigma_nn);
+        }
     }
 }
