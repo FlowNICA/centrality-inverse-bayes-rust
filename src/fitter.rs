@@ -79,6 +79,12 @@ pub struct FitResult {
     pub single_counts: Vec<f64>,
     /// The part from pile-up, `N p P_pile-up` (`None` without pile-up).
     pub pile_up_counts: Option<Vec<f64>>,
+    /// Trigger efficiency: recorded events (data entries) over all events
+    /// `N` of the fit.
+    pub efficiency: f64,
+    /// Data over fit below the fit range (with the underflow), where a
+    /// trigger inefficiency shows up; `None` without bins there.
+    pub efficiency_below_fit: Option<f64>,
 }
 
 impl FitResult {
@@ -184,8 +190,23 @@ impl Fitter {
             hi + 1 - lo,
             self.quad.len()
         )));
+        if self.config.normalization == Normalization::Free
+            && !matches!(self.model.mean, MeanModel::Glauber { .. })
+        {
+            eprintln!(
+                "Warning: with normalization Free the number of all events, and with it the \
+                 trigger efficiency and all centrality percents, depends on the extrapolation \
+                 of n(c_b) below the fit range, which the {} mean does not constrain (on toys \
+                 it is off by 5-30% with an equally good fit). Prefer a Glauber mean, or \
+                 Efficiency(eps) with a known trigger efficiency, and check the stability \
+                 against fit_min",
+                self.model.mean
+            );
+        }
 
         let start = self.initial_values(&user, progress)?;
+        let specs = param_specs(&self.model, &names, &start, &user);
+        let start: Vec<f64> = specs.iter().map(|s| s.value).collect();
         progress(FitProgress::Stage(format!(
             "Start values: {}",
             format_params(&names, &start)
@@ -193,7 +214,6 @@ impl Fitter {
 
         let mut objective = self.objective();
         objective.progress = Some(progress);
-        let specs = param_specs(&self.model, &names, &start, &user);
 
         progress(FitProgress::Stage("Migrad".into()));
         let mut minimum = run_migrad(&objective, &specs, &self.config);
@@ -215,9 +235,41 @@ impl Fitter {
             }
         }
         progress(FitProgress::Stage("Hesse".into()));
-        let minimum = MnHesse::new()
+        let mut minimum = MnHesse::new()
             .with_strategy(self.config.strategy)
             .calculate(&objective, &minimum);
+        /* the exact covariance of Hesse can show that the minimum is not
+         * reached yet: continue with Migrad from there */
+        for _ in 0..2 {
+            if minimum.edm() < EDM_LIMIT {
+                break;
+            }
+            progress(FitProgress::Stage(format!(
+                "EDM = {:.3e} after Hesse, continuing with Migrad",
+                minimum.edm()
+            )));
+            let restart: Vec<ParamSpec> = specs
+                .iter()
+                .zip(minimum.user_state().params().params())
+                .map(|(s, p)| ParamSpec {
+                    value: if s.fixed {
+                        s.value
+                    } else {
+                        inside(p.value(), s.step, s.min, s.max)
+                    },
+                    ..s.clone()
+                })
+                .collect();
+            let again = run_migrad(&objective, &restart, &self.config);
+            let again = MnHesse::new()
+                .with_strategy(self.config.strategy)
+                .calculate(&objective, &again);
+            if again.fval() <= minimum.fval() {
+                minimum = again;
+            } else {
+                break;
+            }
+        }
 
         let state = minimum.user_state();
         let params = state.params().params();
@@ -266,6 +318,10 @@ impl Fitter {
         };
         let n_knee = self.model.n_knee(&values);
         let sigma_knee = self.model.variance(&values, n_knee).sqrt();
+        let underflow = self.data.hist.contents[0];
+        let data_below = underflow + self.data.counts[..lo].iter().sum::<f64>();
+        let fit_below: f64 = model_counts[..lo].iter().sum();
+        let efficiency_below_fit = (fit_below > 0.).then_some(data_below / fit_below);
         Ok(FitResult {
             model: self.model.clone(),
             names,
@@ -277,7 +333,7 @@ impl Fitter {
             ndf,
             norm: eval.norm,
             data_total: self.data.total,
-            valid: minimum.is_valid(),
+            valid: minimum.is_valid() && minimum.edm() < EDM_LIMIT,
             edm: minimum.edm(),
             n_calls: objective.calls.load(Ordering::Relaxed),
             fit_range: (self.data.edges[lo], self.data.edges[hi + 1]),
@@ -287,6 +343,8 @@ impl Fitter {
             model_counts,
             single_counts,
             pile_up_counts,
+            efficiency: self.data.total / eval.norm,
+            efficiency_below_fit,
             values,
         })
     }
@@ -623,20 +681,45 @@ fn param_specs(
                 _ => 0.1 * v.abs().max(0.1),
             };
             let u = &user[i];
+            let step = u.step.unwrap_or(default_step).max(1e-12);
+            let min = u.min.or(positive.then_some(0.));
+            let max = u
+                .max
+                .or(is_pile_up.then_some(0.5))
+                .or(fraction.then_some(1.));
             ParamSpec {
                 name: name.clone(),
-                value: v,
-                step: u.step.unwrap_or(default_step).max(1e-12),
-                min: u.min.or(positive.then_some(0.)),
-                max: u
-                    .max
-                    .or(is_pile_up.then_some(0.5))
-                    .or(fraction.then_some(1.)),
+                value: if u.fixed {
+                    v
+                } else {
+                    inside(v, step, min, max)
+                },
+                step,
+                min,
+                max,
                 fixed: u.fixed,
             }
         })
         .collect()
 }
+
+/// `v` moved strictly inside its limits: at a limit, the transformation of
+/// Minuit for bounded parameters has zero derivative and Migrad gets stuck.
+fn inside(v: f64, step: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    match (min, max) {
+        (Some(lo), Some(hi)) => {
+            let margin = 1e-3 * (hi - lo);
+            v.clamp(lo + margin, hi - margin)
+        }
+        (Some(lo), None) if v <= lo => lo + step,
+        (None, Some(hi)) if v >= hi => hi - step,
+        _ => v,
+    }
+}
+
+/// EDM below which a minimum counts as converged (Minuit's goal is
+/// 0.002 · tolerance · up, 2e-4 by default).
+const EDM_LIMIT: f64 = 1e-2;
 
 /// Adds the parameters to a Migrad or Minimize builder (they share the method
 /// names but no public trait).
@@ -723,7 +806,10 @@ impl Objective<'_> {
             .model
             .bin_probabilities(p, self.quad, self.edges, self.bin_model);
         let norm = match (self.normalization, self.method) {
-            (Normalization::Data, _) => self.data_total,
+            (Normalization::Data | Normalization::Efficiency(_), _) => self
+                .normalization
+                .fixed_total(self.data_total)
+                .expect("fixed normalization"),
             (Normalization::Free, FitMethod::Chi2) => {
                 let (mut num, mut den) = (0., 0.);
                 for ((&d, &e), &q) in self.counts.iter().zip(self.errors).zip(&probs) {

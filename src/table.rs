@@ -72,6 +72,11 @@ fn columns(result: &CentralityResult) -> Vec<Column> {
             Box::new(|c| num(c.data_percent, 2)),
         ),
         (
+            "Efficiency",
+            "Efficiency",
+            Box::new(|c| num(c.efficiency, 4)),
+        ),
+        (
             "<cb>",
             "$\\langle c_b\\rangle$",
             Box::new(|c| num(c.cb.mean, 4)),
@@ -80,7 +85,7 @@ fn columns(result: &CentralityResult) -> Vec<Column> {
     ];
     if result.pile_up_probability > 0. {
         cols.insert(
-            5,
+            6,
             (
                 "PileUp%",
                 "Pile-up, \\%",
@@ -160,6 +165,12 @@ pub fn plain_table(result: &CentralityResult) -> String {
         result.n_knee,
         result.sigma_knee,
         100. * result.c_knee
+    );
+    let _ = writeln!(
+        s,
+        "trigger efficiency (data / fit): {:.4} of all events (normalization {}); \
+         DataPercent is the data in a class over all events of the fit",
+        result.efficiency, result.normalization
     );
     if result.pile_up_probability > 0. {
         let _ = writeln!(

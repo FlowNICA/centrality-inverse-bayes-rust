@@ -51,9 +51,12 @@
         //   Chi2       - Neyman chi2 with the data errors, for weighted or scaled histograms
         fit_method: Likelihood,
 
-        // Normalization of the model:
-        //   Data - the number of entries of the histogram (it must contain all events)
-        //   Free - fitted; for data with events lost below the fit range
+        // Number N of all inelastic events, to which the centrality percents refer;
+        // the trigger efficiency (data / fit) is printed:
+        //   Data            - the entries of the histogram (it must contain all events)
+        //   Efficiency(0.9) - the entries divided by a known trigger efficiency
+        //   Free            - fitted in the fit range and extrapolated below it; only as
+        //                     good as the mean model there (prefer a Glauber mean)
         normalization: Data,
 
         // Comparison of a bin to the model: Integral of the density over the bin,

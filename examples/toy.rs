@@ -3,13 +3,16 @@
 //! known mean n̄(c_b), truncated to integers.
 //!
 //! ```sh
-//! cargo run --release --example toy -- toy.root [events] [seed] [--large] [--pile-up=P]
+//! cargo run --release --example toy -- toy.root [events] [seed] [--large] [--pile-up=P] [--efficiency=N0,W]
 //! ```
 //!
 //! With `--pile-up=P`, an event is with probability `P` the sum of two
-//! independent collisions. The file contains the histogram `hMult` (unit
-//! bins), the histogram `hB` of the impact parameter and the tree `events`
-//! with the branches `B` (of the first collision), `Mult` and `PileUp`.
+//! independent collisions. With `--efficiency=N0,W`, an event is recorded
+//! with the trigger efficiency `1 / (1 + exp(-(n - N0)/W))`. The file contains
+//! the histogram `hMult` (unit bins, recorded events), the histogram `hB` of
+//! the impact parameter (all events) and the tree `events` (all events) with
+//! the branches `B` (of the first collision), `Mult`, `PileUp` and
+//! `Triggered`.
 
 use std::f64::consts::PI;
 
@@ -31,6 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pile_up: f64 = std::env::args()
         .find_map(|a| a.strip_prefix("--pile-up=").map(str::to_string))
         .map_or(Ok(0.), |s| s.parse())?;
+    let efficiency: Option<(f64, f64)> = std::env::args()
+        .find_map(|a| a.strip_prefix("--efficiency=").map(str::to_string))
+        .map(|s| -> Result<(f64, f64), Box<dyn std::error::Error>> {
+            let (n0, w) = s.split_once(',').ok_or("--efficiency=N0,W")?;
+            Ok((n0.parse()?, w.parse()?))
+        })
+        .transpose()?;
     let truth = if large { TRUTH_LARGE } else { TRUTH };
     let mut args = std::env::args().skip(1).filter(|a| !a.starts_with("--"));
     let path = args.next().unwrap_or_else(|| "toy.root".into());
@@ -59,7 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mean = model.mean(&truth, PI * b * b / SIGMA_INEL);
         Ok((b, Gamma::new(mean / truth[0], truth[0])?.sample(rng)))
     };
-    let (mut bs, mut mults, mut piled) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut bs, mut mults, mut piled, mut triggered) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for _ in 0..n_events {
         let (b, mut n) = collision(&mut rng)?;
         /* pile-up: a second, independent collision in the same event */
@@ -68,18 +79,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             n += collision(&mut rng)?.1;
         }
         let n = n.floor();
-        h_mult.fill(n);
+        let recorded = efficiency
+            .is_none_or(|(n0, w)| rng.random::<f64>() < 1. / (1. + (-(n - n0) / w).exp()));
+        if recorded {
+            h_mult.fill(n);
+        }
         h_b.fill(b);
         bs.push(b as f32);
         mults.push(n as i32);
         piled.push(i32::from(is_pile_up));
+        triggered.push(i32::from(recorded));
     }
+    let n_recorded = triggered.iter().filter(|t| **t == 1).count();
     let tree = Tree::new(
         "events",
         vec![
             Branch::f32("B", bs),
             Branch::i32("Mult", mults),
             Branch::i32("PileUp", piled),
+            Branch::i32("Triggered", triggered),
         ],
     );
     FileWriter::create(&path)
@@ -87,6 +105,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add(&h_b)
         .put(tree)
         .write(Compression::default())?;
-    println!("{n_events} events written to {path}");
+    println!(
+        "{n_events} events written to {path}, {n_recorded} recorded (efficiency {:.4})",
+        n_recorded as f64 / n_events as f64
+    );
     Ok(())
 }

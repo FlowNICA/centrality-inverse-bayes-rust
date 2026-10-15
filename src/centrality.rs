@@ -69,6 +69,9 @@ pub struct CentralityClass {
     pub fit_max_percent: f64,
     /// Percent of the data histogram entries in the class.
     pub data_percent: f64,
+    /// Trigger efficiency in the class: data entries over the recorded events
+    /// expected from the fit, in the same bins.
+    pub efficiency: f64,
     /// Percent of the recorded events of the fit in the class that are
     /// pile-up (0 without pile-up).
     pub pile_up_percent: f64,
@@ -100,6 +103,10 @@ pub struct CentralityResult {
     pub pile_up_probability: f64,
     /// Start of the pile-up dominated tail, excluded from the classes.
     pub pile_up_tail: Option<f64>,
+    /// Data entries over all events of the fit.
+    pub efficiency: f64,
+    /// Normalization of the fit.
+    pub normalization: crate::config::Normalization,
 }
 
 /// The model with fixed parameters, with the kernels at the quadrature nodes.
@@ -431,7 +438,14 @@ pub fn compute(
                 max_border: display(x_hi),
                 fit_min_percent: 100. * c_hi,
                 fit_max_percent: 100. * c_lo,
-                data_percent: 100. * data_in_class(fit, x_lo, x_hi, config.borders) / data.total,
+                data_percent: 100. * data_in_class(fit, x_lo, x_hi, config.borders) / fit.norm,
+                efficiency: {
+                    let fit_in_class: f64 = (0..data.n_bins())
+                        .filter(|&i| bin_in_class(fit, i, x_lo, x_hi, config.borders))
+                        .map(|i| single_counts[i] + pile_up_counts.as_ref().map_or(0., |d| d[i]))
+                        .sum();
+                    data_in_class(fit, x_lo, x_hi, config.borders) / fit_in_class
+                },
                 pile_up_percent: pile_up_counts.as_ref().map_or(0., |d| {
                     let (mut sum_d, mut sum_all) = (0., 0.);
                     for i in (0..data.n_bins())
@@ -476,6 +490,8 @@ pub fn compute(
         n_error_samples: n_samples,
         pile_up_probability: model.pile_up_probability(p),
         pile_up_tail,
+        efficiency: data.total / fit.norm,
+        normalization: fit.normalization,
     };
     let objects = final_objects(config, fit, impact, &calc, &result, &borders, &model_counts)?;
     Ok((result, objects))
@@ -667,6 +683,7 @@ fn final_objects(
         Branch::f64("FitMinPercent", col(&|c| c.fit_min_percent)),
         Branch::f64("FitMaxPercent", col(&|c| c.fit_max_percent)),
         Branch::f64("DataPercent", col(&|c| c.data_percent)),
+        Branch::f64("Efficiency", col(&|c| c.efficiency)),
         Branch::f64("PileUpPercent", col(&|c| c.pile_up_percent)),
         Branch::f64("CbAverage", col(&|c| c.cb.mean)),
         Branch::f64("CbWidth", col(&|c| c.cb.rms)),

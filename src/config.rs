@@ -31,20 +31,60 @@ impl FitMethod {
     }
 }
 
-/// Normalization of the model to the data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// Normalization of the model to the data: the number `N` of all inelastic
+/// events, to which the centrality percents refer. The trigger efficiency
+/// is the number of recorded events over `N`.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub enum Normalization {
     /// `N` is the number of entries of the data histogram (including under-
     /// and overflow), as in Das et al.: `P(n)` is normalized to all events, so
     /// the fraction of events outside the fit range constrains the fit too.
-    /// The histogram must contain all (triggered) events.
+    /// The histogram must contain all inelastic events (efficiency 1): with
+    /// a trigger inefficiency, the fit distorts `n̄(c_b)` to absorb the lost
+    /// events, without any sign in its quality, and all percents are wrong.
     Data,
-    /// The number of events `N` of the model is a free parameter, fitted
-    /// together with the shape (it is profiled analytically). Use it when
-    /// events are lost below the fit range (e.g. by trigger inefficiency): the
-    /// model then extrapolates to all events, but the extrapolation is only
-    /// weakly constrained, so `N` and the centrality scale can be biased.
+    /// `N` = entries / `ε`, for a trigger efficiency `ε` known from elsewhere
+    /// (e.g. a simulation of the trigger). Choose the fit range where the
+    /// trigger is fully efficient.
+    Efficiency(f64),
+    /// `N` is fitted together with the shape, from the bins in the fit range
+    /// only (profiled analytically), and the model extrapolates below it. Use
+    /// it for a trigger inefficiency below the fit range when `ε` is not
+    /// known. `N` is then only as good as the extrapolation of `n̄(c_b)`: on
+    /// toys the `Glauber` mean gives `N` within 1% if the data follow it,
+    /// while `ExpPoly` can be off by 5-30% with an equally good fit. Check the
+    /// stability of `N` against `fit_min`.
     Free,
+}
+
+impl Normalization {
+    /// The number of all events for a data histogram with `entries`, if it
+    /// does not depend on the fit.
+    pub fn fixed_total(self, entries: f64) -> Option<f64> {
+        match self {
+            Normalization::Data => Some(entries),
+            Normalization::Efficiency(e) => Some(entries / e),
+            Normalization::Free => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Normalization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Normalization::Data => f.write_str("Data"),
+            Normalization::Efficiency(e) => write!(f, "Efficiency({e:?})"),
+            Normalization::Free => f.write_str("Free"),
+        }
+    }
+}
+
+impl std::str::FromStr for Normalization {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        ron::from_str(s.trim())
+            .map_err(|e| Error::Input(format!("unknown normalization '{s}': {e}")))
+    }
 }
 
 /// Initial value, step, limits and fixing of a fit parameter.
@@ -357,6 +397,11 @@ impl FitConfig {
                 self.cb_points
             ));
         }
+        if let Normalization::Efficiency(e) = self.normalization
+            && !(e > 0. && e <= 1.)
+        {
+            return err(format!("the trigger efficiency must be in (0, 1], got {e}"));
+        }
         if self.strategy > 2 {
             return err(format!("strategy must be 0, 1 or 2, got {}", self.strategy));
         }
@@ -563,6 +608,31 @@ mod tests {
             },
         );
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn normalizations() {
+        let parse = |n: &str| {
+            let text =
+                format!(r#"(fit: (data_file: "d.root", data_hist: "h", normalization: {n}))"#);
+            parse_section::<FitConfig>(&text, "fit")
+                .unwrap()
+                .validate()
+                .map(|_| ())
+        };
+        assert!(
+            parse("Data").is_ok() && parse("Free").is_ok() && parse("Efficiency(0.92)").is_ok()
+        );
+        assert!(parse("Efficiency(0)").is_err() && parse("Efficiency(1.2)").is_err());
+        for n in [
+            Normalization::Data,
+            Normalization::Free,
+            Normalization::Efficiency(0.875),
+        ] {
+            assert_eq!(n.to_string().parse::<Normalization>().unwrap(), n);
+        }
+        assert_eq!(Normalization::Efficiency(0.5).fixed_total(100.), Some(200.));
+        assert_eq!(Normalization::Free.fixed_total(100.), None);
     }
 
     #[test]

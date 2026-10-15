@@ -614,3 +614,78 @@ fn glauber_mean_is_fitted() {
         assert!((b - truth).abs() < 0.05, "class {k}: {b} vs {truth}");
     }
 }
+
+#[test]
+fn trigger_inefficiency_at_low_multiplicity() {
+    let dir = test_dir("efficiency");
+    /* recorded with the efficiency 1 / (1 + exp(-(n - 6)/1.5)) */
+    let all = toy_events(300_000, 37, None);
+    let mut rng = SmallRng::seed_from_u64(38);
+    let recorded: Vec<(f64, f64)> = all
+        .iter()
+        .copied()
+        .filter(|&(_, n)| rng.random::<f64>() < 1. / (1. + (-(n - 6.) / 1.5).exp()))
+        .collect();
+    let true_efficiency = recorded.len() as f64 / all.len() as f64;
+    assert!((0.8..0.88).contains(&true_efficiency), "{true_efficiency}");
+    let data = dir.join("toy.root");
+    write_toy(&data, &recorded, 500, 500.);
+
+    let fit = |name: &str, normalization: Normalization| {
+        let out = dir.join(name);
+        let mut c = fit_config(&out, &data);
+        c.fit_min = Some(20.);
+        c.normalization = normalization;
+        let r = centrality_inverse_bayes_rust::run(c).unwrap();
+        let mut config = CentralityConfig::new(out.join(FIT_FILE_NAME));
+        config.out_dir = out.clone();
+        config.table_formats = vec![];
+        (r, centrality::run(&config).unwrap())
+    };
+
+    /* the data alone: efficiency 1 by construction, wrong percents */
+    let (r, _) = fit("data", Normalization::Data);
+    assert_eq!(r.efficiency, 1.);
+
+    /* known efficiency: the total and the classes of all events */
+    let (r, c) = fit("known", Normalization::Efficiency(true_efficiency));
+    assert!((r.efficiency - true_efficiency).abs() < 1e-12);
+    assert!((r.norm - all.len() as f64).abs() < 1e-6);
+    let below = r.efficiency_below_fit.unwrap();
+    assert!(below < 0.8 && below > 0.3, "{below}");
+    for class in &c.classes {
+        /* the efficiency of each class, against the true one */
+        let in_class = |e: &&(f64, f64)| {
+            e.1 >= class.min_border && (class.number == 0 || e.1 < class.max_border)
+        };
+        let n_all = all.iter().filter(in_class).count() as f64;
+        let n_recorded = recorded.iter().filter(in_class).count() as f64;
+        let truth = n_recorded / n_all;
+        assert!(
+            (class.efficiency - truth).abs() < 0.03,
+            "{}: {} vs {truth}",
+            class.label(),
+            class.efficiency
+        );
+        /* DataPercent refers to all events */
+        assert!((class.data_percent - 100. * n_recorded / all.len() as f64).abs() < 1e-9);
+        /* the percents are those of all events: the class holds the nominal
+         * fraction of all toy events */
+        let width = class.max_percent - class.min_percent;
+        assert!((100. * n_all / all.len() as f64 - width).abs() < 0.2 * width + 0.3);
+    }
+    assert!(c.classes[9].efficiency < 0.2 && c.classes[0].efficiency > 0.99);
+
+    /* free normalization: N from the extrapolation of ExpPoly below the fit
+     * range, which is not constrained (here it even finds fewer events than
+     * recorded); only check that it is reported */
+    let (r, _) = fit("free", Normalization::Free);
+    assert!(r.efficiency.is_finite() && r.efficiency > 0.);
+    let stored = read_fit(&dir.join("free").join(FIT_FILE_NAME)).unwrap();
+    assert_eq!(stored.normalization, Normalization::Free);
+    let stored = read_fit(&dir.join("known").join(FIT_FILE_NAME)).unwrap();
+    assert_eq!(
+        stored.normalization,
+        Normalization::Efficiency(true_efficiency)
+    );
+}

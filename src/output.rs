@@ -261,7 +261,7 @@ pub fn write_fit(
             s("variance", model.variance.to_string()),
             s("bin_model", config.bin_model.to_string()),
             s("fit_method", format!("{:?}", config.fit_method)),
-            s("normalization", format!("{:?}", config.normalization)),
+            s("normalization", config.normalization.to_string()),
             Branch::i32("pile_up", vec![i32::from(model.pile_up)]),
             f("pile_up_probability", model.pile_up_probability(p)),
             Branch::i32("cb_points", vec![config.cb_points as i32]),
@@ -269,6 +269,11 @@ pub fn write_fit(
             Branch::i32("ndf", vec![result.ndf as i32]),
             f("chi2_ndf", result.reduced_statistic()),
             f("norm", result.norm),
+            f("efficiency", result.efficiency),
+            f(
+                "efficiency_below_fit",
+                result.efficiency_below_fit.unwrap_or(f64::NAN),
+            ),
             f("data_total", result.data_total),
             f("fit_min", result.fit_range.0),
             f("fit_max", result.fit_range.1),
@@ -387,10 +392,7 @@ pub fn read_fit(path: &Path) -> Result<StoredFit> {
         "Chi2" => FitMethod::Chi2,
         _ => FitMethod::Likelihood,
     };
-    let normalization = match string("normalization")?.as_str() {
-        "Free" => Normalization::Free,
-        _ => Normalization::Data,
-    };
+    let normalization: Normalization = string("normalization")?.parse()?;
 
     let parameters = tree("Parameters")?;
     let names = match parameters.read_branch(&file, "name")? {

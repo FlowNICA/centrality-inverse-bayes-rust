@@ -53,6 +53,28 @@ fn main() -> ExitCode {
                 r.sigma_knee,
                 100. * r.c_knee
             );
+            println!(
+                "  trigger efficiency (data / fit): {:.4} of all events{}",
+                r.efficiency,
+                r.efficiency_below_fit.map_or(String::new(), |e| format!(
+                    ", {e:.4} below the fit range (n < {})",
+                    r.fit_range.0
+                ))
+            );
+            if r.efficiency > 1. {
+                eprintln!(
+                    "Warning: the fit extrapolates fewer events below the fit range than were \
+                     recorded (efficiency {:.4} > 1): the extrapolation of n(c_b) is not reliable",
+                    r.efficiency
+                );
+            }
+            if r.reduced_statistic() > 2. {
+                eprintln!(
+                    "Warning: the fit describes the data poorly ({} = {:.2})",
+                    method.statistic_name(),
+                    r.reduced_statistic()
+                );
+            }
             println!("Total time: {:.1?}", start.elapsed());
             ExitCode::SUCCESS
         }

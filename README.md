@@ -214,7 +214,7 @@ fit: (
     variance: Proportional,       // Proportional or Constant
     pile_up: false,               // fit pile-up with probability p
     fit_method: Likelihood,       // Likelihood or Chi2
-    normalization: Data,          // Data or Free
+    normalization: Data,          // Data, Efficiency(eps) or Free
     bin_model: Integral,          // Integral or Center
     cb_points: 1024,
     // params: { "theta": (value: 1.0, min: 0.1, max: 10), "a3": (value: 0, fixed: true) },
@@ -231,15 +231,18 @@ fit: (
   `θ` about 2% low, the likelihood fit is unbiased. Both are `-2 ln L` up to a
   constant (Minuit `up = 1`); the printed value is divided by the number of
   degrees of freedom.
-- `normalization: Data` (default, as Das et al. and `GammaFit2.C`): the model
-  is normalized to all entries of the histogram, including those outside the
-  fit range and in under/overflow, so `P(n)` integrates to one over all events
-  and the fraction of events below the fit range constrains the fit. The
-  histogram must contain all (triggered) events. With `Free` the number of
-  events is fitted (profiled analytically) and the model extrapolates below
-  the fit range, e.g. for data lost by trigger inefficiency. This
-  extrapolation is weakly constrained: on the toy data with `fit_min: 10` the
-  fitted total differs from the true one by several percent.
+- `normalization` sets the number `N` of all inelastic events, to which the
+  centrality percents refer (the total cross section); see
+  [Trigger efficiency](#trigger-efficiency):
+  - `Data` (default, as Das et al. and `GammaFit2.C`): `N` is the number of
+    entries of the histogram, including those outside the fit range and in
+    under/overflow, so `P(n)` integrates to one over the recorded events and
+    the fraction of events below the fit range constrains the fit. The
+    histogram must contain all inelastic events (trigger efficiency 1).
+  - `Efficiency(0.92)`: `N` is the number of entries divided by a trigger
+    efficiency known from elsewhere, e.g. a simulation of the trigger.
+  - `Free`: `N` is fitted from the bins in the fit range (profiled
+    analytically) and the model extrapolates below it.
 - `params`: start value (`value`), step, limits (`min`, `max`) and `fixed` for
   any parameter, by name (`theta`, `n_knee`, `a1`, ..., or `x_max`, `x_min`,
   `alpha`, `gamma`, or `mu`, `f`). By default `theta`, `n_knee`, `x_max`,
@@ -266,7 +269,9 @@ The fit writes `<out_dir>/bayes_fit.root` with
   and `c_b`;
 - tree `FitResult`: model (`kernel`, `mean`, `variance`, `bin_model`,
   `fit_method`, `normalization` as strings), `statistic`, `ndf`, `chi2_ndf`,
-  `pile_up`, `pile_up_probability`, `norm`, `data_total`, `fit_min`, `fit_max`, `n_knee`, `sigma_knee`, `c_knee`,
+  `pile_up`, `pile_up_probability`, `norm` (all events `N`), `data_total`,
+  `efficiency` (`data_total / norm`), `efficiency_below_fit` (data over fit
+  below the fit range), `fit_min`, `fit_max`, `n_knee`, `sigma_knee`, `c_knee`,
   `valid`, `edm`, `n_calls`, the data file and histogram name;
 - tree `Parameters`: `name`, `value`, `error`, `fixed`, one entry per parameter;
 - tree `Covariance`: `row`, `col`, `value` of the full covariance matrix.
@@ -322,7 +327,8 @@ centrality: (
 - tree `Result`, one entry per class: `Ncc`, `MinPercent`, `MaxPercent`,
   `MinBorder`, `MaxBorder` (`Int_t` if all are integers, as `printFinal.C`
   expects, otherwise `Double_t`), `FitMinPercent`, `FitMaxPercent`,
-  `DataPercent` (entries of the data in the class), `PileUpPercent` (percent
+  `DataPercent` (entries of the data in the class over all events `N` of the
+  fit), `Efficiency` (data over fit in the class), `PileUpPercent` (percent
   of the recorded events of the fit in the class that are pile-up),
   `CbAverage`, `CbWidth`
   (RMS), `CbMin`, `CbMax`, with `impact_parameter` also `BAverage`, `BWidth`,
@@ -442,6 +448,57 @@ impact_parameter: Glauber(
 - The `c_b` results do not depend on `P(b)`; compared with `Geometric` with
   the same `σ_inel`, central classes have the same `<b>`, while in
   peripheral classes the diffuse nuclear edge gives larger `b`.
+
+### Trigger efficiency
+
+An experimental trigger loses events with a low value of the observable, so
+the recorded distribution falls below `P(n)` in the most peripheral events
+and the histogram holds only a fraction `ε` of all inelastic events. The
+centrality percents must refer to all events (the total inelastic cross
+section), so `N`, and with it `ε`, has to be known:
+
+- With `normalization: Data`, `N` is the number of recorded events, which
+  assumes `ε = 1`. With an inefficient trigger the fit then distorts
+  `n̄(c_b)` to absorb the lost events, **without any sign in its quality**:
+  on a toy with `ε = 0.838` (efficiency `1/(1 + exp(-(n - 6)/1.5))`, `fit_min:
+  20`) the fit has `-2 ln λ/ndf = 0.56`, but `c_knee` is 0.85% instead of
+  0.70% and all borders are shifted (e.g. 0-10% starts at 158 instead of 149).
+- With `normalization: Efficiency(ε)` and a fit range where the trigger is
+  fully efficient, the classes are those of all events: on the same toy with
+  the true `ε`, the borders are those of the fully efficient toy, and the
+  efficiency of each class (data over fit) agrees with the true one (0.406 vs
+  0.410 in 80-90%, 0.075 vs 0.073 in 90-100%).
+- With `normalization: Free`, `N` comes from the extrapolation of the fitted
+  `P(n)` below the fit range, so it is only as good as the shape of `n̄(c_b)`
+  there, which the data in the fit range do not constrain. On toys with this
+  efficiency and `fit_min` from 12 to 50:
+
+  | toy | fitted mean | `N` (true 10⁶) | `-2 ln λ/ndf` |
+  |---|---|---|---|
+  | two-component | `Glauber` | -0.9% to +0.5% | 0.37-0.43 |
+  | two-component | `ExpPoly(3)` | -31% to -19% | 0.38-0.46 |
+  | `ExpPoly(3)` | `ExpPoly(3)` | -12% to -5% (once +1%: `ε > 1`) | 0.66 |
+  | `ExpPoly(3)` | `Glauber` | +25% to +34% | 1.9-9.5 |
+
+  So `Free` needs a mean model that describes the peripheral events, such as
+  the `Glauber` mean when the data follow it (a wrong one shows in the fit
+  quality); with `ExpPoly` or `Indra` the fit prints a warning. Check the
+  stability of `N` against `fit_min` in any case.
+
+The fit prints the trigger efficiency, data over fit, for all events and
+below the fit range, e.g.
+`trigger efficiency (data / fit): 0.8377 of all events, 0.5878 below the fit
+range (n < 20)`, and writes them to `FitResult`; `fit_ratio` in the fit file is
+data over fit in each bin, the efficiency versus `n` below the fit range.
+`define-centrality` gives the efficiency of each class (`Efficiency` in
+`Result` and the tables), and `DataPercent` is the data in a class over all
+events `N`, so in efficient classes it agrees with the class width. It warns if
+an extrapolation finds fewer events than recorded (`ε > 1`).
+
+`P(c_b|class)` and `P(b|class)` describe all collisions in a class. In
+partially efficient classes the recorded ones are biased to larger `n` within
+the class, hence slightly smaller `b` (13.51 instead of 13.60 fm in 80-90% of
+the toy above).
 
 ## Validation
 
