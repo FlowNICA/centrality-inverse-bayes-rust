@@ -99,7 +99,17 @@
         //   Fermi(b0: 14.5, width: 0.4)                    b0 from sigma_inel or given
         //   Histogram(file: "~/b.root", hist: "hB")       - histogram of b (fm)
         //   Tree(file: "~/glauber.root", tree: "nt_Au_Au", branch: "B") - b of each event
-        impact_parameter: Geometric(sigma_inel: 685.0),
+        //   Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)
+        //       - optical Glauber model from the density profiles of the nuclei in
+        //         data/nuclei.ron (from oxy-glauber; a custom file with nuclei_file: "...").
+        //         P(b) ~ 2 pi b [1 - (1 - sigma_NN T_AB(b))^(AB)], sigma_inel follows.
+        //         sigma_nn in mb (optional sigma_np: then sigma_nn is sigma_pp and the
+        //         cross section is averaged over the pp/nn/np pairs), or sqrt_snn (GeV):
+        //           2.0223-3.378 GeV - inelastic sigma_pp and sigma_np of Bystricky et al.
+        //                              (as TGlauberMC), averaged over the pairs
+        //           >= 10 GeV        - parametrization of arXiv:2011.14909
+        //         other energies: give sigma_nn (and sigma_np)
+        impact_parameter: Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0),
 
         // Histograms of b on [0, b_max] (default b_max: largest b) and of c_b on [0, 1]
         b_bins: 200,

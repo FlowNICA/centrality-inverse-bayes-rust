@@ -495,3 +495,61 @@ fn pile_up_is_fitted_and_excluded_from_classes() {
     let tree = TreeReader::open(&fin, "Result").unwrap();
     assert_eq!(numbers(&tree, &fin, "PileUpPercent").unwrap().len(), 10);
 }
+
+#[test]
+fn impact_parameter_from_nuclear_density_profiles() {
+    let dir = test_dir("optical");
+    let events = toy_events(100_000, 23, None);
+    let data = dir.join("toy.root");
+    write_toy(&data, &events, 500, 500.);
+    centrality_inverse_bayes_rust::run(fit_config(&dir, &data)).unwrap();
+
+    let run = |ip: ImpactParameter| {
+        let mut config = CentralityConfig::new(dir.join(FIT_FILE_NAME));
+        config.out_dir = dir.clone();
+        config.impact_parameter = Some(ip);
+        config.table_formats = vec![];
+        (centrality::run(&config).unwrap(), config.final_path())
+    };
+    let (glauber, final_path) = run(ImpactParameter::Glauber {
+        nucleus_a: "Au".into(),
+        nucleus_b: "Au".into(),
+        sigma_nn: Some(30.),
+        sigma_np: None,
+        sqrt_snn: None,
+        nuclei_file: None,
+    });
+    let description = glauber.impact.clone().unwrap();
+    assert!(description.contains("optical Glauber"), "{description}");
+
+    /* the same total cross section with a sharp geometric edge */
+    let sigma_inel = centrality_inverse_bayes_rust::optical::OpticalGlauber::new(
+        "Au",
+        "Au",
+        Some(30.),
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .profile()
+    .sigma_inel()
+    .unwrap();
+    assert!((600. ..760.).contains(&sigma_inel), "{sigma_inel}");
+    let (geometric, _) = run(ImpactParameter::Geometric { sigma_inel });
+    let (g, o) = (&geometric.classes, &glauber.classes);
+    /* central collisions: P_inel = 1, the same b */
+    assert!((g[0].b.unwrap().mean - o[0].b.unwrap().mean).abs() < 0.05);
+    /* peripheral: the diffuse edge of the nuclei reaches larger b */
+    assert!(o[9].b.unwrap().mean > g[9].b.unwrap().mean + 0.3);
+    /* c_b does not depend on P(b) */
+    for (a, b) in g.iter().zip(o) {
+        assert_eq!(a.cb, b.cb);
+    }
+
+    let fin = FileReader::open(final_path).unwrap();
+    let h = Hist1D::read_root(&fin, "B_Distribution").unwrap();
+    let width = (h.xaxis.xmax - h.xaxis.xmin) / h.xaxis.nbins as f64;
+    let integral: f64 = h.contents.iter().sum::<f64>() * width;
+    assert!((integral - 1.).abs() < 1e-3, "{integral}");
+}

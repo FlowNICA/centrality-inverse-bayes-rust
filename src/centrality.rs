@@ -751,6 +751,24 @@ fn final_objects(
     let b_edges: Vec<f64> = (0..=config.b_bins)
         .map(|i| b_max * i as f64 / config.b_bins as f64)
         .collect();
+    /* the impact parameter distribution of all inelastic events */
+    if let Some(ip) = impact {
+        let density: Vec<f64> = b_edges
+            .windows(2)
+            .map(|w| (ip.cb_of_b(w[1]) - ip.cb_of_b(w[0])) / (w[1] - w[0]))
+            .collect();
+        objects.hists.push(uniform_histogram(
+            "B_Distribution",
+            &format!(
+                "P(b) of inelastic events: {};b, fm;P(b), 1/fm",
+                ip.description()
+            ),
+            0.,
+            b_max,
+            &density,
+            None,
+        ));
+    }
     let per_class: Vec<(Hist1D, Option<Hist1D>)> = classes
         .par_iter()
         .map(|c| {

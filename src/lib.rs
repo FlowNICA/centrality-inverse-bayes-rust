@@ -34,6 +34,7 @@ pub mod fitter;
 pub mod impact;
 pub mod model;
 pub mod numeric;
+pub mod optical;
 pub mod output;
 pub mod table;
 

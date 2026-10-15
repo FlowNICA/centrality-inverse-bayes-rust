@@ -276,7 +276,10 @@ centrality: (
   - `Histogram(file: "...", hist: "hB")`: a histogram of `b` (fm) of
     inelastic events, e.g. from a model;
   - `Tree(file: "...", tree: "nt_Au_Au", branch: "B")`: the `b` of each event,
-    e.g. the `B` branch of the MC-Glauber tree used by centrality-glauber-rust.
+    e.g. the `B` branch of the MC-Glauber tree used by centrality-glauber-rust;
+  - `Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)`: the optical
+    Glauber model from the nuclear density profiles, see
+    [Impact parameter from the nuclear density](#impact-parameter-from-the-nuclear-density).
 - `n_error_samples`: the fit uncertainties are propagated by drawing parameter
   sets from a multivariate normal distribution with the fit covariance (fixed
   parameters stay fixed) and recomputing everything; the standard deviations
@@ -299,6 +302,8 @@ centrality: (
   fixed `b`;
 - `Cb_VS_CentralityClass <min>%-<max>%` and `B_VS_CentralityClass <min>%-<max>%`:
   the probability densities `P(c_b|class)` and `P(b|class)` (1/fm);
+- `B_Distribution`: `P(b)` of all inelastic events (1/fm), with the source of
+  `P(b)` in the title;
 - `Cb_average_VS_Centrality`, `B_average_VS_Centrality`: the means versus
   centrality with the RMS as errors, and `Fit_B_Mean` (TGraphErrors, as written
   by `GammaFit2.C` and read by its `printFinal.C`);
@@ -312,6 +317,84 @@ The table is printed to stdout and written in the requested formats; the
 `.C` macro has arrays of the borders and results and `GetCentMult(mult)`,
 which returns the middle of the class of `mult` in percent (the most central
 class is open above).
+
+### Impact parameter from the nuclear density
+
+`impact_parameter: Glauber(...)` computes `P(b)` from the density profiles of
+the colliding nuclei in the optical Glauber model (Miller et al., Ann. Rev.
+Nucl. Part. Sci. 57 (2007) 205), with no Monte Carlo:
+
+```
+T_A(s)    = ∫ ρ_A(√(s² + z²)) dz              thickness, ∫ T_A d²s = 1
+T_AB(b)   = ∫ T_A(s) T_B(|s - b|) d²s          overlap,   ∫ T_AB d²b = 1
+P_inel(b) = 1 - (1 - σ_NN T_AB(b))^{AB}
+P(b)      = 2πb P_inel(b) / σ_inel,            σ_inel = ∫ 2πb P_inel(b) db
+```
+
+```ron
+impact_parameter: Glauber(
+    nucleus_a: "Au",
+    nucleus_b: "Au",
+    sigma_nn: 30.0,          // mb; or sqrt_snn: 2.2 (GeV, 2.0223-3.378 or from 10)
+    // sigma_np: 35.0,       // then sigma_nn is the pp cross section
+    // nuclei_file: "~/my_nuclei.ron",
+),
+```
+
+- The nuclei are those of [oxy-glauber](https://github.com/FlowNICA/oxy-glauber):
+  [`data/nuclei.ron`](data/nuclei.ron) is its `data/nuclei.ron` (GPL-3.0),
+  embedded in the binary at compile time; `nuclei_file` reads another file in
+  the same format. Every analytic profile is supported: Woods-Saxon (3pF,
+  3pG), proton-neutron 3pF, harmonic oscillator, the 1970 oxygen profile, hard
+  sphere, the proton profiles (for p+A) and the Hulthén deuteron (the
+  nucleon density at half the pair separation). `FromFile` and `FromGraph`
+  (e.g. `O`, `C`, `Osat`) have no analytic density; use e.g. `Opar` or `Oho`.
+- Deformed nuclei (`Ellipsoid`, `DeformedBox`, `DeformedTF2`, e.g. `U`, `Xe2`)
+  use the density averaged over the orientations, and the reweighted profiles
+  (`*rw`) their Woods-Saxon density: the reweighting polynomial only
+  compensates the minimum distance between nucleons sampled in the Monte Carlo.
+  Densities are cut at `max_r`, where oxy-glauber stops sampling.
+- `σ_NN` is `sigma_nn` (with `sigma_np`, `sigma_nn` is the pp and nn cross
+  section, and the effective one is averaged over the pp, nn and np pairs of
+  the two nuclei, weighted by their numbers of protons and neutrons), or it is
+  computed from `sqrt_snn`:
+  - from 10 GeV, with the parametrization of Loizides et al.
+    (arXiv:2011.14909), as in oxy-glauber, for all pairs;
+  - from 2.0223 to 3.378 GeV, from the measured inelastic pp and np cross
+    sections of Bystricky et al., J. Physique 48 (1987) 199, Table VI (the
+    tables of TGlauberMC and oxy-glauber), linearly interpolated in the
+    kinetic energy of the beam on a fixed target,
+    `T = (s - 2m²)/(2m) - m` with the mean nucleon mass `m = 0.93892 GeV`,
+    and averaged over the pairs as above. The range is that of the np table
+    (`T` = 0.3-4.2 GeV); below it is the pion production threshold
+    (2.016 GeV), where the inelastic cross section vanishes, and between
+    3.378 and 10 GeV there are no np data in the table. For these energies,
+    give `sigma_nn` and `sigma_np`.
+
+  Close to the threshold the inelastic cross section, and with it `P(b)` and
+  `σ_inel`, changes fast with energy. For Au+Au:
+
+  | `√s_NN`, GeV | `T`, GeV | `σ_pp`, mb | `σ_np`, mb | effective `σ_NN`, mb | `σ_inel`, b |
+  |-------|-------|-------|-------|-------|-------|
+  | 2.023 | 0.302 | 0.09  | 0.006 | 0.05  | 1.35  |
+  | 2.1   | 0.471 | 4.28  | 2.38  | 3.37  | 5.34  |
+  | 2.2   | 0.700 | 17.0  | 9.76  | 13.5  | 6.25  |
+  | 2.416 | 1.23  | 26.4  | 21.1  | 23.8  | 6.60  |
+  | 3.0   | 2.91  | 27.5  | 27.9  | 27.7  | 6.69  |
+
+  Some analyses at these energies use the total (elastic + inelastic) NN
+  cross section instead; it can be given with `sigma_nn`/`sigma_np`. The
+  cross sections used are printed with the table and in the title of
+  `B_Distribution`.
+- The computed `σ_inel` is printed with the table and in the title of
+  `B_Distribution`: 6.93 b for Au+Au at `σ_NN = 42 mb`, 7.63 b for Pb+Pb at
+  64 mb and 2.01 b for p+Pb at 70 mb, close to Monte Carlo Glauber values. The
+  optical model has no fluctuations of the nucleon positions, so `P(b)`
+  differs slightly from the Monte Carlo one in the most peripheral events;
+  for that, use `Tree` with the `B` branch of an MC-Glauber tree.
+- The `c_b` results do not depend on `P(b)`; compared with `Geometric` with
+  the same `σ_inel`, central classes have the same `<b>`, while in
+  peripheral classes the diffuse nuclear edge gives larger `b`.
 
 ## Validation
 

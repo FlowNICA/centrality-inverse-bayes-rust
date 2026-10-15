@@ -138,6 +138,24 @@ pub enum ImpactParameter {
         tree: String,
         branch: String,
     },
+    /// Optical Glauber model from the density profiles of the nuclei
+    /// `nucleus_a` and `nucleus_b` (names of `data/nuclei.ron`, the nuclei of
+    /// oxy-glauber, or of `nuclei_file`): `P(b) ∝ 2πb [1 - (1 - σ_NN
+    /// T_AB(b))^{AB}]`. `σ_NN` is `sigma_nn` (mb) or computed from `sqrt_snn`
+    /// (GeV, at least 10 GeV); with `sigma_np`, `sigma_nn` is the pp
+    /// cross section and the np one is `sigma_np`.
+    Glauber {
+        nucleus_a: String,
+        nucleus_b: String,
+        #[serde(default)]
+        sigma_nn: Option<f64>,
+        #[serde(default)]
+        sigma_np: Option<f64>,
+        #[serde(default)]
+        sqrt_snn: Option<f64>,
+        #[serde(default)]
+        nuclei_file: Option<PathBuf>,
+    },
 }
 
 /// How the borders of the centrality classes are chosen.
@@ -404,6 +422,13 @@ impl CentralityConfig {
         {
             *file = expand_home(file);
         }
+        if let Some(ImpactParameter::Glauber {
+            nuclei_file: Some(file),
+            ..
+        }) = &mut config.impact_parameter
+        {
+            *file = expand_home(file);
+        }
         config.validate()?;
         Ok(config)
     }
@@ -473,6 +498,23 @@ impl CentralityConfig {
                 (None, Some(b)) if !(*b > 0.) => err(format!("b0 must be positive, got {b}")),
                 _ => Ok(()),
             },
+            Some(ImpactParameter::Glauber {
+                sigma_nn,
+                sigma_np,
+                sqrt_snn,
+                ..
+            }) => match (sigma_nn, sqrt_snn) {
+                (Some(_), Some(_)) | (None, None) => err(
+                    "Glauber impact parameter needs exactly one of sigma_nn and sqrt_snn".into(),
+                ),
+                (Some(s), None) if !(*s > 0.) => err(format!("sigma_nn must be positive, got {s}")),
+                (None, Some(_)) if sigma_np.is_some() => {
+                    err("sigma_np can only be used with sigma_nn".into())
+                }
+                (None, Some(e)) => crate::optical::nn_cross_sections(*e).map(|_| ()),
+                _ if sigma_np.is_some_and(|s| !(s > 0.)) => err("sigma_np must be positive".into()),
+                _ => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -540,6 +582,43 @@ mod tests {
                 .is_ok()
         );
         assert!(parse("Geometric(sigma_inel: -1)").unwrap().is_err());
+        let c = parse(r#"Glauber(nucleus_a: "Pb", nucleus_b: "Pb", sqrt_snn: 5020)"#)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            c.impact_parameter,
+            Some(ImpactParameter::Glauber { .. })
+        ));
+        assert!(
+            parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30, sigma_np: 35)"#)
+                .unwrap()
+                .is_ok()
+        );
+        /* exactly one of sigma_nn and sqrt_snn; sqrt_snn from 2.02 to 3.38 GeV
+         * (Bystricky tables) or from 10 GeV */
+        assert!(
+            parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au")"#)
+                .unwrap()
+                .is_err()
+        );
+        let sqrt_snn = |e: f64| {
+            parse(&format!(
+                r#"Glauber(nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: {e})"#
+            ))
+            .unwrap()
+        };
+        assert!(sqrt_snn(2.2).is_ok() && sqrt_snn(3.).is_ok() && sqrt_snn(200.).is_ok());
+        assert!(sqrt_snn(2.).is_err() && sqrt_snn(5.).is_err());
+        assert!(
+            parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 2.4, sigma_np: 20)"#)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            parse(r#"Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30, sqrt_snn: 200)"#)
+                .unwrap()
+                .is_err()
+        );
         assert!(parse("Nope(x: 1)").is_err());
     }
 

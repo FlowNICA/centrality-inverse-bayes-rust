@@ -124,7 +124,10 @@ pub fn load_nuclei(path: Option<&Path>) -> Result<BTreeMap<String, NucleusParams
                 .map_err(|e| Error::Config(format!("cannot read {}: {e}", p.display())))?;
             (text, p.display().to_string())
         }
-        None => (NUCLEI_RON.to_string(), "the embedded nuclei.ron".to_string()),
+        None => (
+            NUCLEI_RON.to_string(),
+            "the embedded nuclei.ron".to_string(),
+        ),
     };
     ron::Options::default()
         .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
@@ -157,11 +160,12 @@ impl NucleusParams {
     /// averaged over the orientations of deformed nuclei.
     fn species_density(&self, r: f64, proton: bool) -> f64 {
         use DensityProfile::*;
-        let (rr, a, w) = if proton || !matches!(self.profile, ProtonNeutron3PF | ProtonNeutronReweighted) {
-            (self.r, self.a, self.w)
-        } else {
-            (self.r2, self.a2, self.w2)
-        };
+        let (rr, a, w) =
+            if proton || !matches!(self.profile, ProtonNeutron3PF | ProtonNeutronReweighted) {
+                (self.r, self.a, self.w)
+            } else {
+                (self.r2, self.a2, self.w2)
+            };
         match self.profile {
             ProtonExp => (-r / rr).exp(),
             ProtonGaussian => (-(r * r) / (2. * rr * rr)).exp(),
@@ -235,7 +239,11 @@ impl NucleusParams {
                 }
             }
         };
-        0.5 * x.iter().zip(&wt).map(|(&c, &w)| w * density(c)).sum::<f64>()
+        0.5 * x
+            .iter()
+            .zip(&wt)
+            .map(|(&c, &w)| w * density(c))
+            .sum::<f64>()
     }
 }
 
@@ -274,14 +282,19 @@ impl Nucleus {
     }
 
     pub fn from_params(name: &str, params: &NucleusParams) -> Result<Self> {
-        if matches!(params.profile, DensityProfile::FromFile | DensityProfile::FromGraph) {
+        if matches!(
+            params.profile,
+            DensityProfile::FromFile | DensityProfile::FromGraph
+        ) {
             return Err(Error::Config(format!(
                 "nucleus '{name}': profile {:?} has no analytic density for the optical Glauber model",
                 params.profile
             )));
         }
         if params.n < 1 || params.z < 0 || params.z > params.n || !(params.r_max() > 0.) {
-            return Err(Error::Config(format!("nucleus '{name}': invalid parameters")));
+            return Err(Error::Config(format!(
+                "nucleus '{name}': invalid parameters"
+            )));
         }
         let r_max = params.r_max();
         let a = params.mass();
@@ -292,8 +305,22 @@ impl Nucleus {
         let dr = r_max / N_RADIUS as f64;
         let radii: Vec<f64> = (0..=N_RADIUS).map(|i| i as f64 * dr).collect();
         let normalized = |proton: bool| -> Vec<f64> {
-            let rho: Vec<f64> = radii.iter().map(|&r| params.species_density(r, proton)).collect();
-            let norm = 4. * PI * trapezoid(&radii.iter().zip(&rho).map(|(r, v)| r * r * v).collect::<Vec<_>>(), dr);
+            let rho: Vec<f64> = radii
+                .iter()
+                /* a negative w term makes the far tail of some 3pF profiles
+                 * negative; as in the sampling of oxy-glauber, it is zero */
+                .map(|&r| params.species_density(r, proton).max(0.))
+                .collect();
+            let norm = 4.
+                * PI
+                * trapezoid(
+                    &radii
+                        .iter()
+                        .zip(&rho)
+                        .map(|(r, v)| r * r * v)
+                        .collect::<Vec<_>>(),
+                    dr,
+                );
             rho.iter().map(|v| v / norm).collect()
         };
         let density = if matches!(
@@ -301,7 +328,10 @@ impl Nucleus {
             DensityProfile::ProtonNeutron3PF | DensityProfile::ProtonNeutronReweighted
         ) {
             let (p, n) = (normalized(true), normalized(false));
-            p.iter().zip(&n).map(|(p, n)| (z * p + (a - z) * n) / a).collect()
+            p.iter()
+                .zip(&n)
+                .map(|(p, n)| (z * p + (a - z) * n) / a)
+                .collect()
         } else {
             normalized(true)
         };
@@ -404,6 +434,107 @@ pub fn sigma_nn_from_energy(sqrt_snn: f64) -> f64 {
     28.84374 + 0.04584121 * log_s.powf(2.374257)
 }
 
+/// Mean nucleon mass (GeV), for the conversion of `√s_NN` to the kinetic
+/// energy of the beam in the fixed target frame.
+const NUCLEON_MASS: f64 = 0.938_918_7;
+/// From this `√s_NN` (GeV) on, the parametrization of arXiv:2011.14909 is used.
+pub const HIGH_ENERGY_MIN: f64 = 10.;
+
+/// Kinetic energy per nucleon (GeV) of the beam on a fixed target with
+/// the centre-of-mass energy `√s_NN`: `s = 2m² + 2m (T + m)`.
+pub fn kinetic_energy(sqrt_snn: f64) -> f64 {
+    let m = NUCLEON_MASS;
+    (sqrt_snn * sqrt_snn - 2. * m * m) / (2. * m) - m
+}
+
+/// `√s_NN` (GeV) for the kinetic energy per nucleon `t` (GeV) on a fixed target.
+pub fn sqrt_snn_from_kinetic(t: f64) -> f64 {
+    let m = NUCLEON_MASS;
+    (2. * m * m + 2. * m * (t + m)).sqrt()
+}
+
+/// Range of `√s_NN` covered by both tables of Bystricky et al.:
+/// from `T = 0.3` to `4.2` GeV of the np table (2.02 to 3.38 GeV).
+pub fn low_energy_range() -> (f64, f64) {
+    (
+        sqrt_snn_from_kinetic(NP_T[0]),
+        sqrt_snn_from_kinetic(NP_T[NP_T.len() - 1]),
+    )
+}
+
+/// Inelastic nucleon-nucleon cross sections (mb) at `√s_NN` (GeV): from 10
+/// GeV the parametrization of arXiv:2011.14909, the same for all pairs
+/// (`(σ, None)`); from 2.02 to 3.38 GeV the measured inelastic pp and np cross
+/// sections of Bystricky et al., J. Physique 48 (1987) 199, Table VI (as in
+/// TGlauberMC and oxy-glauber), linearly interpolated in the kinetic energy of
+/// the beam (`(σ_pp, Some(σ_np))`, σ_nn = σ_pp). Other energies are errors.
+pub fn nn_cross_sections(sqrt_snn: f64) -> Result<(f64, Option<f64>)> {
+    if sqrt_snn >= HIGH_ENERGY_MIN {
+        return Ok((sigma_nn_from_energy(sqrt_snn), None));
+    }
+    let (lo, hi) = low_energy_range();
+    if !(lo..=hi).contains(&sqrt_snn) {
+        let reason = if sqrt_snn < lo {
+            "below it the inelastic np cross section is not tabulated: the \
+             pion production threshold is at 2.016 GeV"
+        } else {
+            "there are no inelastic np data between the table and the \
+             high-energy parametrization (from 10 GeV)"
+        };
+        return Err(Error::Config(format!(
+            "sqrt_snn = {sqrt_snn} GeV: the cross sections from sqrt_snn are \
+             available from {lo:.4} to {hi:.4} GeV (Bystricky tables) and from \
+             10 GeV; {reason}. Give sigma_nn (and sigma_np) instead"
+        )));
+    }
+    let t = kinetic_energy(sqrt_snn);
+    Ok((
+        interpolate(&PP_T, &PP_SIGMA, t),
+        Some(interpolate(&NP_T, &NP_SIGMA, t)),
+    ))
+}
+
+/// Linear interpolation in a table with ascending `x`.
+fn interpolate(x: &[f64], y: &[f64], at: f64) -> f64 {
+    let i = x.partition_point(|&v| v <= at).clamp(1, x.len() - 1);
+    let f = ((at - x[i - 1]) / (x[i] - x[i - 1])).clamp(0., 1.);
+    y[i - 1] + f * (y[i] - y[i - 1])
+}
+
+/* Bystricky et al., J. Physique 48 (1987) 199, Table VI, as in oxy-glauber's
+ * cross_section.rs: kinetic energy T (GeV) and inelastic cross section (mb) */
+const NP_T: [f64; 52] = [
+    0.300, 0.325, 0.350, 0.375, 0.400, 0.425, 0.450, 0.475, 0.500, 0.525, 0.550, 0.575, 0.60, 0.65,
+    0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40, 1.45,
+    1.50, 1.60, 1.70, 1.80, 1.90, 2.00, 2.10, 2.20, 2.30, 2.40, 2.50, 2.60, 2.70, 2.80, 2.90, 3.00,
+    3.20, 3.40, 3.60, 3.80, 4.00, 4.20,
+];
+const NP_SIGMA: [f64; 52] = [
+    0.003, 0.046, 0.175, 0.419, 0.783, 1.26, 1.84, 2.50, 3.23, 4.00, 4.81, 5.64, 6.48, 8.15, 9.77,
+    11.31, 12.76, 14.10, 15.33, 16.46, 17.48, 18.42, 19.26, 20.03, 20.73, 21.36, 21.93, 22.44,
+    22.91, 23.34, 23.72, 24.39, 24.95, 25.42, 25.81, 26.14, 26.43, 26.68, 26.90, 27.10, 27.28,
+    27.45, 27.60, 27.75, 27.89, 28.03, 28.30, 28.57, 28.84, 29.13, 29.42, 29.73,
+];
+const PP_T: [f64; 95] = [
+    0.28, 0.29, 0.30, 0.31, 0.32, 0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.48, 0.50, 0.52, 0.56,
+    0.60, 0.64, 0.68, 0.72, 0.76, 0.80, 0.84, 0.88, 0.92, 0.96, 1.00, 1.04, 1.08, 1.12, 1.16, 1.20,
+    1.24, 1.28, 1.32, 1.36, 1.40, 1.44, 1.48, 1.52, 1.56, 1.64, 1.68, 1.72, 1.76, 1.80, 1.84, 1.88,
+    1.92, 1.96, 2.00, 2.10, 2.20, 2.30, 2.40, 2.50, 2.60, 2.70, 2.80, 2.90, 3.0, 4.0, 5.0, 6.0,
+    7.0, 8.0, 9.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0,
+    90.0, 100.0, 125.0, 150.0, 175.0, 200.0, 225.0, 250.0, 275.0, 300.0, 325.0, 350.0, 375.0,
+    400.0, 425.0,
+];
+const PP_SIGMA: [f64; 95] = [
+    0.027, 0.051, 0.082, 0.120, 0.171, 0.321, 0.563, 0.921, 1.41, 2.05, 2.83, 3.74, 4.76, 5.87,
+    7.04, 9.48, 11.89, 14.14, 16.15, 17.89, 19.34, 20.53, 21.51, 22.33, 23.03, 23.81, 24.39, 24.89,
+    25.30, 25.66, 25.95, 26.21, 26.42, 26.59, 26.74, 26.86, 26.96, 27.04, 27.11, 27.17, 27.21,
+    27.28, 27.30, 27.32, 27.33, 27.34, 27.35, 27.36, 27.36, 27.36, 27.36, 27.37, 27.37, 27.38,
+    27.38, 27.40, 27.41, 27.43, 27.46, 27.49, 27.52, 27.97, 28.48, 28.92, 29.28, 29.55, 29.75,
+    29.89, 30.04, 30.10, 30.09, 30.05, 30.00, 29.88, 29.80, 29.78, 29.91, 30.13, 30.38, 30.66,
+    30.93, 31.19, 31.78, 32.23, 32.56, 32.79, 32.92, 32.97, 32.96, 32.89, 32.78, 32.63, 32.44,
+    32.24, 32.01,
+];
+
 /// Settings of the optical Glauber model.
 #[derive(Debug, Clone)]
 pub struct OpticalGlauber {
@@ -411,12 +542,15 @@ pub struct OpticalGlauber {
     pub nucleus_b: Nucleus,
     /// Effective inelastic nucleon-nucleon cross section (mb).
     pub sigma_nn: f64,
+    /// How `sigma_nn` was obtained, for the description.
+    pub sigma_source: String,
 }
 
 impl OpticalGlauber {
-    /// The nuclei `a` and `b` with `σ_NN` (mb) given, or from `√s_NN`; with
-    /// `sigma_np`, `sigma_nn` is the pp (and nn) cross section and the
-    /// effective one is averaged over the nucleon pairs.
+    /// The nuclei `a` and `b` with `σ_NN` (mb) given, or from `√s_NN` (see
+    /// [`nn_cross_sections`]); with a separate np cross section (`sigma_np`,
+    /// or the tables below 10 GeV) the effective one is averaged over the pp,
+    /// nn and np pairs of the two nuclei.
     pub fn new(
         a: &str,
         b: &str,
@@ -428,9 +562,25 @@ impl OpticalGlauber {
         let nuclei = load_nuclei(nuclei_file)?;
         let nucleus_a = Nucleus::new(a, &nuclei)?;
         let nucleus_b = Nucleus::new(b, &nuclei)?;
-        let sigma_pp = match (sigma_nn, sqrt_snn) {
-            (Some(s), None) => s,
-            (None, Some(e)) => sigma_nn_from_energy(e),
+        let (sigma_pp, sigma_np, source) = match (sigma_nn, sqrt_snn) {
+            (Some(s), None) => (s, sigma_np, "given".to_string()),
+            (None, Some(e)) if sigma_np.is_some() => {
+                return Err(Error::Config(format!(
+                    "sigma_np can only be used with sigma_nn, not with sqrt_snn = {e}"
+                )));
+            }
+            (None, Some(e)) => {
+                let (pp, np) = nn_cross_sections(e)?;
+                let source = match np {
+                    Some(np) => format!(
+                        "sqrt_snn = {e} GeV (T = {:.4} GeV): sigma_pp = {pp:.3} mb, \
+                         sigma_np = {np:.3} mb from Bystricky et al.",
+                        kinetic_energy(e)
+                    ),
+                    None => format!("sqrt_snn = {e} GeV, arXiv:2011.14909"),
+                };
+                (pp, np, source)
+            }
             _ => {
                 return Err(Error::Config(
                     "Glauber impact parameter needs exactly one of sigma_nn and sqrt_snn".into(),
@@ -450,6 +600,7 @@ impl OpticalGlauber {
             nucleus_a,
             nucleus_b,
             sigma_nn: sigma,
+            sigma_source: source,
         })
     }
 
@@ -492,10 +643,11 @@ impl OpticalGlauber {
             cb,
             sigma_inel,
             description: format!(
-                "optical Glauber P(b) for {}+{}, sigma_NN = {:.3} mb, sigma_inel = {:.2} fm^2 ({:.4} b)",
+                "optical Glauber P(b) for {}+{}, sigma_NN = {:.3} mb ({}), sigma_inel = {:.2} fm^2 ({:.4} b)",
                 self.nucleus_a.name,
                 self.nucleus_b.name,
                 self.sigma_nn,
+                self.sigma_source,
                 sigma_inel,
                 sigma_inel / 100.
             ),
@@ -524,7 +676,10 @@ mod tests {
         let nuclei = load_nuclei(None).unwrap();
         assert!(nuclei.len() > 100);
         for (name, params) in &nuclei {
-            if matches!(params.profile, DensityProfile::FromFile | DensityProfile::FromGraph) {
+            if matches!(
+                params.profile,
+                DensityProfile::FromFile | DensityProfile::FromGraph
+            ) {
                 assert!(Nucleus::from_params(name, params).is_err());
                 continue;
             }
@@ -542,8 +697,17 @@ mod tests {
     #[test]
     fn overlap_is_normalized() {
         let nuclei = load_nuclei(None).unwrap();
-        for (a, b) in [("Au", "Au"), ("Pb", "Pb"), ("p", "Pb"), ("d", "Au"), ("U", "U")] {
-            let (na, nb) = (Nucleus::new(a, &nuclei).unwrap(), Nucleus::new(b, &nuclei).unwrap());
+        for (a, b) in [
+            ("Au", "Au"),
+            ("Pb", "Pb"),
+            ("p", "Pb"),
+            ("d", "Au"),
+            ("U", "U"),
+        ] {
+            let (na, nb) = (
+                Nucleus::new(a, &nuclei).unwrap(),
+                Nucleus::new(b, &nuclei).unwrap(),
+            );
             let (t, db) = overlap(&na, &nb);
             let norm = trapezoid(
                 &t.iter()
@@ -568,9 +732,8 @@ mod tests {
 
     #[test]
     fn heavy_ion_cross_sections() {
-        /* Au+Au at √s = 200 GeV (σ_NN ≈ 42 mb) and Pb+Pb at 5.02 TeV (≈ 68 mb):
-         * the optical model gives about 7 b and 7.7 b, a few percent above
-         * the Monte Carlo values (6.9-7.0 b and 7.6-7.7 b) */
+        /* Au+Au at √s = 200 GeV (σ_NN = 42 mb) and Pb+Pb at 5.02 TeV
+         * (σ_NN ≈ 67-68 mb): about 6.9 b and 7.7 b, as Monte Carlo Glauber */
         let au = OpticalGlauber::new("Au", "Au", Some(42.), None, None, None).unwrap();
         let sigma = au.profile().sigma_inel().unwrap() / 100.;
         assert!((6.8..7.5).contains(&sigma), "Au+Au: {sigma} b");
@@ -592,6 +755,47 @@ mod tests {
         let expected = ((z * z + n * n) * 20. + 2. * z * n * 30.) / (197. * 197.);
         assert!(close(g.sigma_nn, expected, 1e-12));
         assert!(OpticalGlauber::new("Au", "Au", None, None, None, None).is_err());
+        assert!(OpticalGlauber::new("Au", "Au", None, Some(30.), Some(2.4), None).is_err());
         assert!(OpticalGlauber::new("Nope", "Au", Some(30.), None, None, None).is_err());
+    }
+
+    #[test]
+    fn low_energy_cross_sections() {
+        /* √s_NN ↔ T round trip and the range of the tables */
+        assert!(close(
+            kinetic_energy(sqrt_snn_from_kinetic(1.23)),
+            1.23,
+            1e-12
+        ));
+        let (lo, hi) = low_energy_range();
+        assert!(
+            close(lo, 2.0223, 1e-4) && close(hi, 3.378, 1e-3),
+            "{lo} {hi}"
+        );
+        /* at a table point the values are reproduced */
+        let (pp, np) = nn_cross_sections(sqrt_snn_from_kinetic(0.70)).unwrap();
+        assert!(close(pp, 0.5 * (16.15 + 17.89), 1e-9) && close(np.unwrap(), 9.77, 1e-9));
+        /* √s_NN = 2.2 GeV is T ≈ 0.700 GeV; 2.4 GeV (Au+Au at 1.23A GeV) */
+        assert!(close(kinetic_energy(2.2), 0.6996, 1e-3));
+        /* HADES Au+Au at 1.23A GeV: √s_NN = 2.42 GeV */
+        assert!(close(sqrt_snn_from_kinetic(1.23), 2.4157, 1e-4));
+        let (pp, np) = nn_cross_sections(2.4).unwrap();
+        assert!((20. ..30.).contains(&pp) && (15. ..25.).contains(&np.unwrap()));
+        /* below the pion threshold and between the table and 10 GeV */
+        for e in [2.0, 1.9, 3.5, 9.9] {
+            let err = nn_cross_sections(e).unwrap_err().to_string();
+            assert!(err.contains("sigma_nn"), "{err}");
+        }
+        assert_eq!(nn_cross_sections(200.).unwrap().1, None);
+
+        /* the effective cross section is averaged over the pairs */
+        let g = OpticalGlauber::new("Au", "Au", None, None, Some(2.2), None).unwrap();
+        let (pp, np) = nn_cross_sections(2.2).unwrap();
+        let (z, n) = (79., 118.);
+        let expected = ((z * z + n * n) * pp + 2. * z * n * np.unwrap()) / (197. * 197.);
+        assert!(close(g.sigma_nn, expected, 1e-12));
+        assert!((12. ..15.).contains(&g.sigma_nn), "{}", g.sigma_nn);
+        let description = g.profile().description();
+        assert!(description.contains("Bystricky"), "{description}");
     }
 }

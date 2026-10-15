@@ -69,6 +69,22 @@ impl ImpactProfile {
                     format!("branch '{branch}' of tree '{tree}' in {}", file.display()),
                 )
             }
+            ImpactParameter::Glauber {
+                nucleus_a,
+                nucleus_b,
+                sigma_nn,
+                sigma_np,
+                sqrt_snn,
+                nuclei_file,
+            } => Ok(crate::optical::OpticalGlauber::new(
+                nucleus_a,
+                nucleus_b,
+                *sigma_nn,
+                *sigma_np,
+                *sqrt_snn,
+                nuclei_file.as_deref(),
+            )?
+            .profile()),
         }
     }
 
