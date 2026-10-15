@@ -376,13 +376,13 @@ pub fn read_fit(path: &Path) -> Result<StoredFit> {
             .ok_or_else(|| Error::Input(format!("FitResult branch '{name}' is empty")))
     };
 
-    let model = Model {
-        kernel: string("kernel")?.parse()?,
-        mean: string("mean")?.parse()?,
-        variance: string("variance")?.parse()?,
+    let model = Model::new(
+        string("kernel")?.parse()?,
+        string("mean")?.parse()?,
+        string("variance")?.parse()?,
         /* absent in files without pile-up support */
-        pile_up: scalar("pile_up").is_ok_and(|v| v != 0.),
-    };
+        scalar("pile_up").is_ok_and(|v| v != 0.),
+    )?;
     let fit_method = match string("fit_method")?.as_str() {
         "Chi2" => FitMethod::Chi2,
         _ => FitMethod::Likelihood,

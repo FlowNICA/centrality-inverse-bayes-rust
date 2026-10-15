@@ -29,6 +29,11 @@
         //                parameters: theta, n_knee, a1..aJ
         //   Indra      - x_max * (1 - c_b^alpha)^gamma + x_min (Frankland et al., PRC 104 034609)
         //                parameters: theta, x_max, x_min, alpha, gamma
+        //   Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)
+        //              - mu * [f <Npart>(c_b) + (1 - f) <Ncoll>(c_b)], <Npart> and <Ncoll> of
+        //                inelastic events from the optical Glauber model (nuclei and cross
+        //                section as for impact_parameter: Glauber below)
+        //                parameters: theta, mu, f (f limited to [0, 1])
         mean: ExpPoly(3),
 
         // Variance of n versus c_b:

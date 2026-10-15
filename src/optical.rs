@@ -426,6 +426,174 @@ pub fn overlap(a: &Nucleus, b: &Nucleus) -> (Vec<f64>, f64) {
     (t_ab, db)
 }
 
+/// Mean number of participants `N_part(b)` on the grid of [`overlap`],
+/// for all collisions (not only the inelastic ones):
+///
+/// ```text
+/// N_part(b) = A ∫ T_A(s) [1 - (1 - σ T_B(|s - b|))^B] d²s
+///           + B ∫ T_B(|s - b|) [1 - (1 - σ T_A(s))^A] d²s
+/// ```
+///
+/// with `σ` in fm². Both terms vanish outside nucleus `a`, so the integral
+/// runs over it.
+pub fn participants(a: &Nucleus, b: &Nucleus, sigma: f64) -> (Vec<f64>, f64) {
+    let b_max = a.r_max() + b.r_max();
+    let db = b_max / N_IMPACT as f64;
+    let (ss, ws) = composite_gauss_legendre(0., a.r_max(), 200, 4);
+    let (phis, wphi) = composite_gauss_legendre(0., PI, 32, 4);
+    let hit = |t: f64, n: f64| -> f64 {
+        /* 1 - (1 - σT)^n: probability that a nucleon hits one of n nucleons */
+        let x = sigma * t;
+        if x >= 1. {
+            1.
+        } else {
+            -(n * (-x).ln_1p()).exp_m1()
+        }
+    };
+    let npart = (0..=N_IMPACT)
+        .into_par_iter()
+        .map(|k| {
+            let bb = k as f64 * db;
+            ss.iter()
+                .zip(&ws)
+                .map(|(&s, &w)| {
+                    let ta = a.thickness(s);
+                    if ta == 0. {
+                        return 0.;
+                    }
+                    let hit_a = hit(ta, a.a);
+                    let angular: f64 = phis
+                        .iter()
+                        .zip(&wphi)
+                        .map(|(&phi, &wp)| {
+                            let d2 = s * s + bb * bb - 2. * s * bb * phi.cos();
+                            let tb = b.thickness(d2.max(0.).sqrt());
+                            wp * (a.a * ta * hit(tb, b.a) + b.a * tb * hit_a)
+                        })
+                        .sum();
+                    w * s * 2. * angular
+                })
+                .sum::<f64>()
+        })
+        .collect();
+    (npart, db)
+}
+
+/// Mean `N_part` and `N_coll` of inelastic collisions versus `c_b`, from the
+/// optical Glauber model, linearly interpolated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlauberMean {
+    /// Ascending values of `c_b`, from 0.
+    cb: Vec<f64>,
+    npart: Vec<f64>,
+    ncoll: Vec<f64>,
+    pub description: String,
+}
+
+impl GlauberMean {
+    /// `(⟨N_part⟩, ⟨N_coll⟩)` at `c_b`.
+    pub fn at(&self, cb: f64) -> (f64, f64) {
+        (
+            interpolate(&self.cb, &self.npart, cb),
+            interpolate(&self.cb, &self.ncoll, cb),
+        )
+    }
+}
+
+/// Settings of the optical Glauber model: the colliding nuclei and the
+/// nucleon-nucleon cross section (see [`OpticalGlauber::new`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlauberSpec {
+    pub nucleus_a: String,
+    pub nucleus_b: String,
+    pub sigma_nn: Option<f64>,
+    pub sigma_np: Option<f64>,
+    pub sqrt_snn: Option<f64>,
+    pub nuclei_file: Option<std::path::PathBuf>,
+}
+
+impl GlauberSpec {
+    /// Checks the settings without computing anything: the cross section
+    /// settings, and that both nuclei exist and have an analytic density.
+    pub fn validate(&self) -> Result<()> {
+        let err = |m: String| Err(Error::Config(m));
+        match (self.sigma_nn, self.sqrt_snn) {
+            (Some(_), Some(_)) | (None, None) => {
+                return err("the Glauber model needs exactly one of sigma_nn and sqrt_snn".into());
+            }
+            (Some(s), None) if !(s > 0.) => {
+                return err(format!("sigma_nn must be positive, got {s}"));
+            }
+            (None, Some(_)) if self.sigma_np.is_some() => {
+                return err("sigma_np can only be used with sigma_nn".into());
+            }
+            (None, Some(e)) => {
+                nn_cross_sections(e)?;
+            }
+            _ => {}
+        }
+        if self.sigma_np.is_some_and(|s| !(s > 0.)) {
+            return err("sigma_np must be positive".into());
+        }
+        let nuclei = load_nuclei(self.nuclei_file.as_deref())?;
+        for name in [&self.nucleus_a, &self.nucleus_b] {
+            match nuclei.get(name) {
+                None => {
+                    return err(format!(
+                        "unknown nucleus '{name}', expected one of: {}",
+                        nuclei.keys().cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                Some(p)
+                    if matches!(
+                        p.profile,
+                        DensityProfile::FromFile | DensityProfile::FromGraph
+                    ) =>
+                {
+                    return err(format!(
+                        "nucleus '{name}': profile {:?} has no analytic density for the optical Glauber model",
+                        p.profile
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub fn build(&self) -> Result<OpticalGlauber> {
+        OpticalGlauber::new(
+            &self.nucleus_a,
+            &self.nucleus_b,
+            self.sigma_nn,
+            self.sigma_np,
+            self.sqrt_snn,
+            self.nuclei_file.as_deref(),
+        )
+    }
+
+    /// RON form of the fields, `nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30`.
+    pub fn ron_fields(&self) -> String {
+        let mut fields = vec![
+            format!("nucleus_a: {:?}", self.nucleus_a),
+            format!("nucleus_b: {:?}", self.nucleus_b),
+        ];
+        for (name, value) in [
+            ("sigma_nn", self.sigma_nn),
+            ("sigma_np", self.sigma_np),
+            ("sqrt_snn", self.sqrt_snn),
+        ] {
+            if let Some(v) = value {
+                fields.push(format!("{name}: {v:?}"));
+            }
+        }
+        if let Some(f) = &self.nuclei_file {
+            fields.push(format!("nuclei_file: {:?}", f.display().to_string()));
+        }
+        fields.join(", ")
+    }
+}
+
 /// Inelastic nucleon-nucleon cross section (mb) at `√s_NN` (GeV) from the
 /// parametrization of Loizides et al., arXiv:2011.14909 (as in oxy-glauber),
 /// valid from 10 GeV.
@@ -622,7 +790,7 @@ impl OpticalGlauber {
             }
             _ => {
                 return Err(Error::Config(
-                    "Glauber impact parameter needs exactly one of sigma_nn and sqrt_snn".into(),
+                    "the Glauber model needs exactly one of sigma_nn and sqrt_snn".into(),
                 ));
             }
         };
@@ -643,28 +811,25 @@ impl OpticalGlauber {
         })
     }
 
+    /// `P_inel(b)` for the overlap `T_AB(b)`.
+    fn inelastic(&self, t_ab: f64) -> f64 {
+        let x = self.sigma_nn * FM2_PER_MB * t_ab;
+        let ab = self.nucleus_a.a * self.nucleus_b.a;
+        if x >= 1. {
+            1.
+        } else {
+            -(ab * (-x).ln_1p()).exp_m1()
+        }
+    }
+
     /// `P_inel(b)` on the grid of `T_AB`, and its step.
     pub fn inelastic_probability(&self) -> (Vec<f64>, f64) {
         let (t_ab, db) = overlap(&self.nucleus_a, &self.nucleus_b);
-        let sigma = self.sigma_nn * FM2_PER_MB;
-        let ab = self.nucleus_a.a * self.nucleus_b.a;
-        let p = t_ab
-            .iter()
-            .map(|&t| {
-                let x = sigma * t;
-                if x >= 1. {
-                    1.
-                } else {
-                    -(ab * (-x).ln_1p()).exp_m1()
-                }
-            })
-            .collect();
-        (p, db)
+        (t_ab.iter().map(|&t| self.inelastic(t)).collect(), db)
     }
 
-    /// The impact parameter profile `c_b(b)` and `σ_inel`.
-    pub fn profile(&self) -> ImpactProfile {
-        let (p_inel, db) = self.inelastic_probability();
+    /// `c_b` at the points of the grid of `P_inel(b)`, and `σ_inel` (fm²).
+    fn centralities(p_inel: &[f64], db: f64) -> (Vec<f64>, f64) {
         let dsigma: Vec<f64> = p_inel
             .iter()
             .enumerate()
@@ -675,8 +840,57 @@ impl OpticalGlauber {
             cum[k] = cum[k - 1] + 0.5 * db * (dsigma[k - 1] + dsigma[k]);
         }
         let sigma_inel = cum[cum.len() - 1];
-        let b: Vec<f64> = (0..dsigma.len()).map(|k| k as f64 * db).collect();
-        let cb: Vec<f64> = cum.iter().map(|c| c / sigma_inel).collect();
+        (cum.iter().map(|c| c / sigma_inel).collect(), sigma_inel)
+    }
+
+    /// Mean `N_part` and `N_coll` of inelastic collisions versus `c_b`:
+    /// `N_coll(b) = AB σ T_AB(b)` and [`participants`], divided by `P_inel(b)`,
+    /// and at least 2 and 1, the minimum of an inelastic collision.
+    pub fn mean_table(&self) -> GlauberMean {
+        let (t_ab, db) = overlap(&self.nucleus_a, &self.nucleus_b);
+        let sigma = self.sigma_nn * FM2_PER_MB;
+        let (npart_all, _) = participants(&self.nucleus_a, &self.nucleus_b, sigma);
+        let p_inel: Vec<f64> = t_ab.iter().map(|&t| self.inelastic(t)).collect();
+        let (cb_grid, _) = Self::centralities(&p_inel, db);
+        let ab = self.nucleus_a.a * self.nucleus_b.a;
+        let (mut cb, mut npart, mut ncoll) = (Vec::new(), Vec::new(), Vec::new());
+        for k in 0..t_ab.len() {
+            if !(p_inel[k] > 1e-9) {
+                break;
+            }
+            /* c_b(b) is flat where P_inel vanishes; keep it increasing */
+            if cb.last().is_some_and(|&c| cb_grid[k] <= c) {
+                continue;
+            }
+            cb.push(cb_grid[k]);
+            /* an inelastic collision has at least 2 participants and 1 binary
+             * collision; the optical N_part / P_inel falls below 2 (to 1.8 for
+             * Au+Au) in the most peripheral events, where its independent hit
+             * probabilities of the nucleons and P_inel are not consistent */
+            npart.push((npart_all[k] / p_inel[k]).max(2.));
+            ncoll.push((ab * sigma * t_ab[k] / p_inel[k]).max(1.));
+        }
+        GlauberMean {
+            description: format!(
+                "optical Glauber {}+{}, sigma_NN = {:.3} mb ({}): <N_part> = {:.1}, <N_coll> = {:.1} at b = 0",
+                self.nucleus_a.name,
+                self.nucleus_b.name,
+                self.sigma_nn,
+                self.sigma_source,
+                npart[0],
+                ncoll[0]
+            ),
+            cb,
+            npart,
+            ncoll,
+        }
+    }
+
+    /// The impact parameter profile `c_b(b)` and `σ_inel`.
+    pub fn profile(&self) -> ImpactProfile {
+        let (p_inel, db) = self.inelastic_probability();
+        let (cb, sigma_inel) = Self::centralities(&p_inel, db);
+        let b: Vec<f64> = (0..p_inel.len()).map(|k| k as f64 * db).collect();
         ImpactProfile::Table {
             b,
             cb,
@@ -863,5 +1077,41 @@ mod tests {
             let g = OpticalGlauber::new("Au", "Au", None, None, Some(e), None).unwrap();
             assert!((27. ..32.).contains(&g.sigma_nn), "{e}: {}", g.sigma_nn);
         }
+    }
+
+    #[test]
+    fn participants_and_collisions() {
+        /* Au+Au at σ_NN = 42 mb: the optical model gives about 380-390
+         * participants and about 1050-1250 binary collisions at b = 0 */
+        let g = OpticalGlauber::new("Au", "Au", Some(42.), None, None, None).unwrap();
+        let table = g.mean_table();
+        let (np0, nc0) = table.at(0.);
+        assert!((370. ..394.).contains(&np0), "{np0}");
+        assert!((1000. ..1300.).contains(&nc0), "{nc0}");
+        /* decreasing with c_b, towards the minimum of an inelastic collision */
+        let (mut prev_np, mut prev_nc) = (f64::INFINITY, f64::INFINITY);
+        for i in 0..=100 {
+            let (np, nc) = table.at(i as f64 / 100.);
+            assert!(np <= prev_np + 1e-6 && nc <= prev_nc + 1e-6, "c_b = {i}%");
+            assert!(np >= 2. && nc >= 1., "c_b = {i}%: {np} {nc}");
+            (prev_np, prev_nc) = (np, nc);
+        }
+        let (np1, nc1) = table.at(1.);
+        assert!(np1 < 2.2 && nc1 < 1.2, "{np1} {nc1}");
+        /* averaged over all inelastic events, N_coll = AB σ_NN / σ_inel */
+        let q = crate::model::Quadrature::new(2048);
+        let mean_ncoll: f64 = q
+            .nodes
+            .iter()
+            .zip(&q.weights)
+            .map(|(&c, &w)| w * table.at(c).1)
+            .sum();
+        let sigma_inel = g.profile().sigma_inel().unwrap();
+        let expected = 197. * 197. * 4.2 / sigma_inel;
+        assert!(
+            close(mean_ncoll, expected, 5e-3),
+            "{mean_ncoll} vs {expected}"
+        );
+        assert!(table.description.contains("N_part"));
     }
 }

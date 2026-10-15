@@ -23,13 +23,16 @@
 //! ```
 
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::error::Error;
 use crate::numeric::{composite_gauss_legendre, gamma_pq, ln_gamma, normal_cdf, normal_sf};
+use crate::optical::{GlauberMean, GlauberSpec};
 
 /// Probabilities below this are treated as zero when walking into the tails.
 const TAIL_CUT: f64 = 1e-22;
@@ -54,7 +57,8 @@ pub enum Kernel {
 }
 
 /// Parametrization of the mean `n̄(c_b)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum MeanModel {
     /// `n̄ = n_knee · exp(-Σ_{j=1}^{J} a_j c_b^j)` with `J` coefficients
     /// (Das et al. use `J = 3`, Rogly et al. `J = 2..4`).
@@ -62,6 +66,59 @@ pub enum MeanModel {
     /// `n̄ = x_max · (1 - c_b^α)^γ + x_min` (Frankland et al.; their
     /// `k(c_b) = n̄/θ`).
     Indra,
+    /// Two-component model `n̄ = μ [f ⟨N_part⟩ + (1 - f) ⟨N_coll⟩]`, with the
+    /// mean numbers of participants and binary collisions of inelastic
+    /// events versus `c_b` from the optical Glauber model of the given nuclei
+    /// and nucleon-nucleon cross section (as `impact_parameter: Glauber`).
+    Glauber {
+        nucleus_a: String,
+        nucleus_b: String,
+        #[serde(default)]
+        sigma_nn: Option<f64>,
+        #[serde(default)]
+        sigma_np: Option<f64>,
+        #[serde(default)]
+        sqrt_snn: Option<f64>,
+        #[serde(default)]
+        nuclei_file: Option<PathBuf>,
+    },
+}
+
+impl MeanModel {
+    /// Names of the parameters of the mean.
+    pub fn param_names(&self) -> Vec<String> {
+        match self {
+            MeanModel::ExpPoly(n) => std::iter::once("n_knee".to_string())
+                .chain((1..=*n).map(|j| format!("a{j}")))
+                .collect(),
+            MeanModel::Indra => ["x_max", "x_min", "alpha", "gamma"]
+                .map(String::from)
+                .to_vec(),
+            MeanModel::Glauber { .. } => ["mu", "f"].map(String::from).to_vec(),
+        }
+    }
+
+    /// The settings of the optical Glauber model of the `Glauber` mean.
+    pub fn glauber_spec(&self) -> Option<GlauberSpec> {
+        match self {
+            MeanModel::Glauber {
+                nucleus_a,
+                nucleus_b,
+                sigma_nn,
+                sigma_np,
+                sqrt_snn,
+                nuclei_file,
+            } => Some(GlauberSpec {
+                nucleus_a: nucleus_a.clone(),
+                nucleus_b: nucleus_b.clone(),
+                sigma_nn: *sigma_nn,
+                sigma_np: *sigma_np,
+                sqrt_snn: *sqrt_snn,
+                nuclei_file: nuclei_file.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Dependence of the variance `σ²(c_b)` on `c_b`; `θ` is the reduced variance
@@ -85,11 +142,11 @@ pub enum BinModel {
 }
 
 /// A complete model: kernel, mean and variance parametrizations, and
-/// optionally pile-up.
+/// optionally pile-up. Construct it with [`Model::new`].
 ///
 /// The parameter vector is `[θ, <mean parameters>]`, followed by the pile-up
 /// probability `p` if `pile_up` is set; see [`Model::param_names`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Model {
     pub kernel: Kernel,
     pub mean: MeanModel,
@@ -97,25 +154,51 @@ pub struct Model {
     /// With probability `p`, a recorded event is the sum of two independent
     /// collisions.
     pub pile_up: bool,
+    /// `⟨N_part⟩` and `⟨N_coll⟩` versus `c_b` for the `Glauber` mean.
+    glauber: Option<Arc<GlauberMean>>,
 }
 
 impl Model {
-    /// Names of the parameters, in the order of the parameter vector.
-    pub fn param_names(&self) -> Vec<String> {
+    /// The model; for the `Glauber` mean this computes the optical Glauber
+    /// `⟨N_part⟩` and `⟨N_coll⟩` (a fraction of a second).
+    pub fn new(
+        kernel: Kernel,
+        mean: MeanModel,
+        variance: VarianceModel,
+        pile_up: bool,
+    ) -> crate::error::Result<Self> {
+        let glauber = match mean.glauber_spec() {
+            Some(spec) => Some(Arc::new(spec.build()?.mean_table())),
+            None => None,
+        };
+        Ok(Model {
+            kernel,
+            mean,
+            variance,
+            pile_up,
+            glauber,
+        })
+    }
+
+    /// The optical Glauber `⟨N_part⟩` and `⟨N_coll⟩` of the `Glauber` mean.
+    pub fn glauber_table(&self) -> Option<&GlauberMean> {
+        self.glauber.as_deref()
+    }
+
+    /// Names of the parameters for the mean model and pile-up, in the order
+    /// of the parameter vector.
+    pub fn param_names_for(mean: &MeanModel, pile_up: bool) -> Vec<String> {
         let mut names = vec!["theta".to_string()];
-        match self.mean {
-            MeanModel::ExpPoly(n) => {
-                names.push("n_knee".into());
-                names.extend((1..=n).map(|j| format!("a{j}")));
-            }
-            MeanModel::Indra => {
-                names.extend(["x_max", "x_min", "alpha", "gamma"].map(String::from));
-            }
-        }
-        if self.pile_up {
+        names.extend(mean.param_names());
+        if pile_up {
             names.push("p".into());
         }
         names
+    }
+
+    /// Names of the parameters, in the order of the parameter vector.
+    pub fn param_names(&self) -> Vec<String> {
+        Self::param_names_for(&self.mean, self.pile_up)
     }
 
     pub fn n_params(&self) -> usize {
@@ -124,10 +207,7 @@ impl Model {
 
     /// Number of parameters of the mean `n̄(c_b)`.
     pub fn n_mean_params(&self) -> usize {
-        match self.mean {
-            MeanModel::ExpPoly(n) => 1 + n,
-            MeanModel::Indra => 4,
-        }
+        self.mean.param_names().len()
     }
 
     /// Index of the pile-up probability in the parameter vector.
@@ -152,6 +232,14 @@ impl Model {
                 let (x_max, x_min, alpha, gamma) = (p[1], p[2], p[3], p[4]);
                 let base = (1. - cb.powf(alpha)).max(0.);
                 x_max * base.powf(gamma) + x_min
+            }
+            MeanModel::Glauber { .. } => {
+                let (npart, ncoll) = self
+                    .glauber
+                    .as_ref()
+                    .expect("the Glauber table is built by Model::new")
+                    .at(cb);
+                p[1] * (p[2] * npart + (1. - p[2]) * ncoll)
             }
         }
     }
@@ -189,6 +277,7 @@ impl Model {
             MeanModel::Indra => {
                 p[1] >= 0. && p[2] >= 0. && p[1] + p[2] > 0. && p[3] > 0. && p[4] > 0.
             }
+            MeanModel::Glauber { .. } => p[1] > 0. && (0. ..=1.).contains(&p[2]),
         }
     }
 
@@ -456,11 +545,17 @@ impl fmt::Display for BinModel {
     }
 }
 
+/// The RON form of the configuration, e.g. `ExpPoly(3)` or
+/// `Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)`.
 impl fmt::Display for MeanModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MeanModel::ExpPoly(n) => write!(f, "ExpPoly({n})"),
             MeanModel::Indra => f.write_str("Indra"),
+            MeanModel::Glauber { .. } => {
+                let spec = self.glauber_spec().expect("Glauber mean");
+                write!(f, "Glauber({})", spec.ron_fields())
+            }
         }
     }
 }
@@ -498,18 +593,14 @@ impl FromStr for BinModel {
     }
 }
 
+/// Parses the RON form written by `Display`.
 impl FromStr for MeanModel {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        let s = s.trim();
-        if s.eq_ignore_ascii_case("Indra") {
-            return Ok(MeanModel::Indra);
-        }
-        s.strip_prefix("ExpPoly(")
-            .and_then(|r| r.strip_suffix(')'))
-            .and_then(|n| n.trim().parse().ok())
-            .map(MeanModel::ExpPoly)
-            .ok_or_else(|| Error::Input(format!("unknown mean model '{s}'")))
+        ron::Options::default()
+            .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
+            .from_str(s.trim())
+            .map_err(|e| Error::Input(format!("unknown mean model '{s}': {e}")))
     }
 }
 
@@ -762,6 +853,7 @@ mod tests {
                         mean: MeanModel::ExpPoly(3),
                         variance,
                         pile_up: false,
+                        glauber: None,
                     },
                     vec![1.2, 200., 3.5, 0.8, 1.6],
                 ));
@@ -771,6 +863,7 @@ mod tests {
                         mean: MeanModel::Indra,
                         variance,
                         pile_up: false,
+                        glauber: None,
                     },
                     vec![0.8, 150., 4., 1.2, 1.5],
                 ));
@@ -791,7 +884,10 @@ mod tests {
                 m.variance.to_string().parse::<VarianceModel>().unwrap(),
                 m.variance
             );
-            let with = Model { pile_up: true, ..m };
+            let with = Model {
+                pile_up: true,
+                ..m.clone()
+            };
             assert_eq!(with.n_params(), m.n_params() + 1);
             assert_eq!(with.param_names().last().unwrap(), "p");
             assert_eq!(with.pile_up_index(), Some(m.n_params()));
@@ -804,6 +900,18 @@ mod tests {
             assert!(!with.is_valid(&q));
         }
         assert!("ExpPoly(x)".parse::<MeanModel>().is_err());
+        /* the Glauber mean round-trips through its RON form */
+        let glauber = MeanModel::Glauber {
+            nucleus_a: "Pb".into(),
+            nucleus_b: "Pb".into(),
+            sigma_nn: None,
+            sigma_np: None,
+            sqrt_snn: Some(5020.),
+            nuclei_file: Some("my nuclei.ron".into()),
+        };
+        let text = glauber.to_string();
+        assert_eq!(text.parse::<MeanModel>().unwrap(), glauber, "{text}");
+        assert_eq!(glauber.param_names(), ["mu", "f"]);
     }
 
     #[test]
@@ -813,13 +921,14 @@ mod tests {
             mean: MeanModel::ExpPoly(2),
             variance: VarianceModel::Proportional,
             pile_up: false,
+            glauber: None,
         };
         let p = [1., 100., 2., 1.];
         assert!(close(m.mean(&p, 0.5), 100. * (-1.25f64).exp(), 1e-14));
         assert_eq!(m.n_knee(&p), 100.);
         let m = Model {
             mean: MeanModel::Indra,
-            ..m
+            ..m.clone()
         };
         let p = [1., 100., 5., 2., 1.];
         assert!(close(m.mean(&p, 0.5), 100. * 0.75 + 5., 1e-14));
@@ -859,7 +968,10 @@ mod tests {
         let quad = Quadrature::new(256);
         let edges: Vec<f64> = (0..=5000).map(|i| i as f64).collect();
         for (m, p) in models() {
-            let with = Model { pile_up: true, ..m };
+            let with = Model {
+                pile_up: true,
+                ..m.clone()
+            };
             let mut q = p.clone();
             q.push(0.1);
             let single = m.bin_probabilities(&p, &quad, &edges, BinModel::Integral);

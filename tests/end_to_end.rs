@@ -20,12 +20,13 @@ const SIGMA_INEL: f64 = 685.;
 const TRUTH: [f64; 5] = [1.1, 220., 4.0, -1.0, 1.5];
 
 fn exp_poly() -> Model {
-    Model {
-        kernel: Kernel::Gamma,
-        mean: MeanModel::ExpPoly(3),
-        variance: VarianceModel::Proportional,
-        pile_up: false,
-    }
+    Model::new(
+        Kernel::Gamma,
+        MeanModel::ExpPoly(3),
+        VarianceModel::Proportional,
+        false,
+    )
+    .unwrap()
 }
 
 fn test_dir(name: &str) -> PathBuf {
@@ -195,10 +196,13 @@ fn model_variants_and_impact_inputs() {
     write_toy(&data, &events, 500, 500.);
 
     /* the INDRA parametrization, on data generated with it */
-    let indra = Model {
-        mean: MeanModel::Indra,
-        ..exp_poly()
-    };
+    let indra = Model::new(
+        Kernel::Gamma,
+        MeanModel::Indra,
+        VarianceModel::Proportional,
+        false,
+    )
+    .unwrap();
     let indra_truth = [0.8, 150., 4., 1.2, 1.5];
     let indra_data = dir.join("indra.root");
     write_toy(
@@ -220,7 +224,7 @@ fn model_variants_and_impact_inputs() {
         };
         let mut c = fit_config(&dir, input);
         c.kernel = kernel;
-        c.mean = mean;
+        c.mean = mean.clone();
         c.fit_method = method;
         if kernel == Kernel::Gauss {
             /* the Gaussian kernel needs a larger cut on peripheral events */
@@ -552,4 +556,61 @@ fn impact_parameter_from_nuclear_density_profiles() {
     let width = (h.xaxis.xmax - h.xaxis.xmin) / h.xaxis.nbins as f64;
     let integral: f64 = h.contents.iter().sum::<f64>() * width;
     assert!((integral - 1.).abs() < 1e-3, "{integral}");
+}
+
+#[test]
+fn glauber_mean_is_fitted() {
+    let dir = test_dir("glauber_mean");
+    let mean = MeanModel::Glauber {
+        nucleus_a: "Au".into(),
+        nucleus_b: "Au".into(),
+        sigma_nn: Some(30.),
+        sigma_np: None,
+        sqrt_snn: None,
+        nuclei_file: None,
+    };
+    let model = Model::new(
+        Kernel::Gamma,
+        mean.clone(),
+        VarianceModel::Proportional,
+        false,
+    )
+    .unwrap();
+    assert_eq!(model.param_names(), ["theta", "mu", "f"]);
+    /* θ, μ, f */
+    let truth = [1.0, 0.3, 0.8];
+    let n_knee = model.n_knee(&truth);
+    assert!((100. ..200.).contains(&n_knee), "{n_knee}");
+    let events = toy_events_of(&model, &truth, 300_000, 29, None);
+    let data = dir.join("toy.root");
+    write_toy(&data, &events, 300, 300.);
+
+    let mut config = fit_config(&dir, &data);
+    config.mean = mean.clone();
+    let r = centrality_inverse_bayes_rust::run(config).unwrap();
+    assert!(r.valid);
+    assert_eq!(r.names, ["theta", "mu", "f"]);
+    for (((name, value), error), t) in r.names.iter().zip(&r.values).zip(&r.errors).zip(truth) {
+        let pull = (value - t) / error;
+        assert!(pull.abs() < 5., "{name}: {value} +- {error} vs {t}");
+    }
+    assert!(r.reduced_statistic() < 1.5);
+
+    /* the fit file restores the model, with its Glauber table */
+    let stored = read_fit(&dir.join(FIT_FILE_NAME)).unwrap();
+    assert_eq!(stored.model.mean, mean);
+    assert_eq!(stored.model, r.model);
+
+    let mut config = CentralityConfig::new(dir.join(FIT_FILE_NAME));
+    config.out_dir = dir.clone();
+    config.impact_parameter = Some(ImpactParameter::Geometric {
+        sigma_inel: SIGMA_INEL,
+    });
+    config.table_formats = vec![];
+    let c = centrality::run(&config).unwrap();
+    for (k, class) in c.classes.iter().enumerate() {
+        let b = class.b.unwrap().mean;
+        let truth = true_mean_b(&events, class.min_border, class.max_border, k == 0);
+        assert!((b - truth).abs() < 0.05, "class {k}: {b} vs {truth}");
+    }
 }

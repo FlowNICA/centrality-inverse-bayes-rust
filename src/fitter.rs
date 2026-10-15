@@ -119,7 +119,7 @@ impl Fitter {
             eprintln!("Warning: bins below 0 are not described by the model");
         }
         Ok(Fitter {
-            model: config.model(),
+            model: config.model()?,
             quad: Quadrature::new(config.cb_points),
             config,
             data,
@@ -131,8 +131,8 @@ impl Fitter {
         &self.config
     }
 
-    pub fn model(&self) -> Model {
-        self.model
+    pub fn model(&self) -> &Model {
+        &self.model
     }
 
     pub fn data(&self) -> &DataHistogram {
@@ -147,7 +147,7 @@ impl Fitter {
     pub fn objective(&self) -> Objective<'_> {
         let (lo, hi) = self.fit_bins;
         Objective {
-            model: self.model,
+            model: self.model.clone(),
             quad: &self.quad,
             edges: &self.data.edges[lo..=hi + 1],
             counts: &self.data.counts[lo..=hi],
@@ -267,7 +267,7 @@ impl Fitter {
         let n_knee = self.model.n_knee(&values);
         let sigma_knee = self.model.variance(&values, n_knee).sqrt();
         Ok(FitResult {
-            model: self.model,
+            model: self.model.clone(),
             names,
             errors,
             fixed,
@@ -422,6 +422,10 @@ impl Fitter {
         match self.model.mean {
             MeanModel::ExpPoly(n) => Ok(prefit_exp_poly(&points, n)),
             MeanModel::Indra => Ok(prefit_indra(&points)),
+            MeanModel::Glauber { .. } => Ok(prefit_glauber(
+                &points,
+                self.model.glauber_table().expect("Glauber table"),
+            )),
         }
     }
 
@@ -480,18 +484,49 @@ fn prefit_exp_poly(points: &[(f64, f64)], n: usize) -> Vec<f64> {
     }
 }
 
+/// `n̄ = μ [f N_part + (1 - f) N_coll]` fitted to the points: linear least
+/// squares in `μf` and `μ(1 - f)` with relative residuals, `f` clamped to
+/// `[0, 1]`.
+fn prefit_glauber(points: &[(f64, f64)], table: &crate::optical::GlauberMean) -> Vec<f64> {
+    /* minimize Σ ((x - α N_part - β N_coll) / x)² */
+    let (mut s11, mut s12, mut s22, mut r1, mut r2) = (0., 0., 0., 0., 0.);
+    for &(c, x) in points {
+        let (np, nc) = table.at(c);
+        let (u, v) = (np / x, nc / x);
+        s11 += u * u;
+        s12 += u * v;
+        s22 += v * v;
+        r1 += u;
+        r2 += v;
+    }
+    let f = match solve(vec![s11, s12, s12, s22], vec![r1, r2]) {
+        Some(ab) if ab[0] + ab[1] > 0. => (ab[0] / (ab[0] + ab[1])).clamp(0., 1.),
+        _ => 0.5,
+    };
+    /* μ for this f: minimize Σ ((x - μ g) / x)² */
+    let (mut num, mut den) = (0., 0.);
+    for &(c, x) in points {
+        let (np, nc) = table.at(c);
+        let g = (f * np + (1. - f) * nc) / x;
+        num += g;
+        den += g * g;
+    }
+    vec![if den > 0. { num / den } else { 1. }, f]
+}
+
 /// `n̄ = x_max (1 - c^α)^γ + x_min` fitted to the logarithm of the points.
 fn prefit_indra(points: &[(f64, f64)]) -> Vec<f64> {
     let x_top = points
         .iter()
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map_or(1., |p| p.1);
-    let model = Model {
-        kernel: crate::model::Kernel::Gamma,
-        mean: MeanModel::Indra,
-        variance: crate::model::VarianceModel::Proportional,
-        pile_up: false,
-    };
+    let model = Model::new(
+        crate::model::Kernel::Gamma,
+        MeanModel::Indra,
+        crate::model::VarianceModel::Proportional,
+        false,
+    )
+    .expect("the Indra model needs no table");
     let fcn = |q: &[f64]| -> f64 {
         let p = [1., q[0], q[1], q[2], q[3]];
         if !model.is_valid(&p) {
@@ -531,6 +566,7 @@ fn scale_mean(model: &Model, p: &mut [f64], s: f64) {
             p[1] *= s;
             p[2] *= s;
         }
+        MeanModel::Glauber { .. } => p[1] *= s,
     }
 }
 
@@ -570,15 +606,19 @@ fn param_specs(
         .map(|(i, name)| {
             let v = start[i];
             let is_pile_up = model.pile_up_index() == Some(i);
+            let glauber = matches!(model.mean, MeanModel::Glauber { .. });
+            /* the fraction f of the Glauber mean is limited to [0, 1] */
+            let fraction = glauber && i == 2;
             let positive = match model.mean {
                 _ if is_pile_up => true,
                 MeanModel::ExpPoly(_) => i <= 1,
-                MeanModel::Indra => true,
+                MeanModel::Indra | MeanModel::Glauber { .. } => true,
             };
-            let default_step = match (model.mean, i) {
+            let default_step = match (&model.mean, i) {
                 _ if is_pile_up => 0.5 * v.abs().max(1e-4),
+                _ if fraction => 0.05,
                 (_, 0) => 0.1 * v.abs(),
-                (MeanModel::ExpPoly(_), 1) | (MeanModel::Indra, 1) => 0.02 * v.abs(),
+                (_, 1) => 0.02 * v.abs(),
                 (MeanModel::Indra, 2) => 0.1 * v.abs().max(1e-3 * start[1].abs()),
                 _ => 0.1 * v.abs().max(0.1),
             };
@@ -588,7 +628,10 @@ fn param_specs(
                 value: v,
                 step: u.step.unwrap_or(default_step).max(1e-12),
                 min: u.min.or(positive.then_some(0.)),
-                max: u.max.or(is_pile_up.then_some(0.5)),
+                max: u
+                    .max
+                    .or(is_pile_up.then_some(0.5))
+                    .or(fraction.then_some(1.)),
                 fixed: u.fixed,
             }
         })
@@ -783,12 +826,13 @@ mod tests {
 
     #[test]
     fn indra_prefit_recovers_curve() {
-        let model = Model {
-            kernel: crate::model::Kernel::Gamma,
-            mean: MeanModel::Indra,
-            variance: crate::model::VarianceModel::Proportional,
-            pile_up: false,
-        };
+        let model = Model::new(
+            crate::model::Kernel::Gamma,
+            MeanModel::Indra,
+            crate::model::VarianceModel::Proportional,
+            false,
+        )
+        .unwrap();
         let truth = [1., 40., 3., 1.5, 1.3];
         let points: Vec<(f64, f64)> = (1..40)
             .map(|i| {

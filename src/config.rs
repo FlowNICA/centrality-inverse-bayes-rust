@@ -318,17 +318,21 @@ impl FitConfig {
         let mut config: FitConfig = read_section(path, "fit")?;
         config.data_file = expand_home(&config.data_file);
         config.out_dir = expand_home(&config.out_dir);
+        if let MeanModel::Glauber {
+            nuclei_file: Some(file),
+            ..
+        } = &mut config.mean
+        {
+            *file = expand_home(file);
+        }
         config.validate()?;
         Ok(config)
     }
 
-    pub fn model(&self) -> Model {
-        Model {
-            kernel: self.kernel,
-            mean: self.mean,
-            variance: self.variance,
-            pile_up: self.pile_up,
-        }
+    /// The model; for the `Glauber` mean this computes the optical Glauber
+    /// table (see [`Model::new`]).
+    pub fn model(&self) -> Result<Model> {
+        Model::new(self.kernel, self.mean.clone(), self.variance, self.pile_up)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -337,6 +341,10 @@ impl FitConfig {
             && !(1..=10).contains(&n)
         {
             return err(format!("ExpPoly needs 1 to 10 coefficients, got {n}"));
+        }
+        if let Some(spec) = self.mean.glauber_spec() {
+            spec.validate()
+                .map_err(|e| Error::Config(format!("mean: {e}")))?;
         }
         if let (Some(lo), Some(hi)) = (self.fit_min, self.fit_max)
             && !(lo < hi)
@@ -355,7 +363,7 @@ impl FitConfig {
         if self.n_threads == Some(0) {
             return err("n_threads must be positive".into());
         }
-        let names = self.model().param_names();
+        let names = Model::param_names_for(&self.mean, self.pile_up);
         for (name, p) in &self.params {
             if !names.contains(name) {
                 return err(format!(
@@ -499,22 +507,22 @@ impl CentralityConfig {
                 _ => Ok(()),
             },
             Some(ImpactParameter::Glauber {
+                nucleus_a,
+                nucleus_b,
                 sigma_nn,
                 sigma_np,
                 sqrt_snn,
-                ..
-            }) => match (sigma_nn, sqrt_snn) {
-                (Some(_), Some(_)) | (None, None) => err(
-                    "Glauber impact parameter needs exactly one of sigma_nn and sqrt_snn".into(),
-                ),
-                (Some(s), None) if !(*s > 0.) => err(format!("sigma_nn must be positive, got {s}")),
-                (None, Some(_)) if sigma_np.is_some() => {
-                    err("sigma_np can only be used with sigma_nn".into())
-                }
-                (None, Some(e)) => crate::optical::nn_cross_sections(*e).map(|_| ()),
-                _ if sigma_np.is_some_and(|s| !(s > 0.)) => err("sigma_np must be positive".into()),
-                _ => Ok(()),
-            },
+                nuclei_file,
+            }) => crate::optical::GlauberSpec {
+                nucleus_a: nucleus_a.clone(),
+                nucleus_b: nucleus_b.clone(),
+                sigma_nn: *sigma_nn,
+                sigma_np: *sigma_np,
+                sqrt_snn: *sqrt_snn,
+                nuclei_file: nuclei_file.clone(),
+            }
+            .validate()
+            .map_err(|e| Error::Config(format!("impact_parameter: {e}"))),
             _ => Ok(()),
         }
     }
@@ -555,6 +563,50 @@ mod tests {
             },
         );
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn glauber_mean_settings_are_checked_when_read() {
+        let check = |glauber: &str| {
+            let text = format!(
+                r#"(fit: (data_file: "d.root", data_hist: "h", mean: Glauber({glauber})))"#
+            );
+            parse_section::<FitConfig>(&text, "fit").unwrap().validate()
+        };
+        for ok in [
+            r#"nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 2.4"#,
+            r#"nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 3.5"#,
+            r#"nucleus_a: "Pb", nucleus_b: "Pb", sqrt_snn: 200"#,
+            r#"nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 20, sigma_np: 25"#,
+        ] {
+            check(ok).unwrap();
+        }
+        for (bad, message) in [
+            (
+                r#"nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 2.0"#,
+                "2.0223",
+            ),
+            (r#"nucleus_a: "Au", nucleus_b: "Au""#, "exactly one"),
+            (
+                r#"nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30, sqrt_snn: 200"#,
+                "exactly one",
+            ),
+            (
+                r#"nucleus_a: "Au", nucleus_b: "Au", sqrt_snn: 2.4, sigma_np: 20"#,
+                "sigma_np",
+            ),
+            (
+                r#"nucleus_a: "Gold", nucleus_b: "Au", sqrt_snn: 2.4"#,
+                "unknown nucleus",
+            ),
+            (
+                r#"nucleus_a: "O", nucleus_b: "O", sqrt_snn: 200"#,
+                "analytic density",
+            ),
+        ] {
+            let e = check(bad).unwrap_err().to_string();
+            assert!(e.contains("mean") && e.contains(message), "{bad}: {e}");
+        }
     }
 
     #[test]

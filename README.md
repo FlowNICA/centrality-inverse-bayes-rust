@@ -46,11 +46,41 @@ described by a kernel `P(n|c_b)` with mean `n̄(c_b)` and variance `σ²(c_b)`:
 |--------|----------|------------|
 | `ExpPoly(J)` (default `J = 3`) | `n_knee · exp(-Σ_{j=1}^{J} a_j c_b^j)` | `n_knee, a1..aJ` |
 | `Indra` | `x_max · (1 - c_b^α)^γ + x_min` | `x_max, x_min, alpha, gamma` |
+| `Glauber(...)` | `μ · [f ⟨N_part⟩(c_b) + (1 - f) ⟨N_coll⟩(c_b)]` from the optical Glauber model | `mu, f` |
 
 | `variance` | `σ²(c_b)` |
 |------------|-----------|
 | `Proportional` (default) | `θ · n̄(c_b)` (constant reduced variance, scenario A of Das et al.) |
 | `Constant` | `θ · n̄(0)` (constant width, scenario B) |
+
+The `Glauber` mean is the two-component model of the MC-Glauber fit of
+centrality-glauber-rust (`mode: "Default"`), with the mean numbers of
+participants and binary collisions of inelastic events at each `c_b` from
+the optical Glauber model instead of a Monte Carlo:
+
+```ron
+mean: Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0),   // or sqrt_snn: 2.4
+```
+
+The nuclei and cross section are given as for
+[`impact_parameter: Glauber`](#impact-parameter-from-the-nuclear-density).
+`N_coll(b) = AB σ_NN T_AB(b)` and
+`N_part(b) = A ∫ T_A [1 - (1 - σ_NN T_B)^B] d²s + B ∫ T_B [1 - (1 - σ_NN T_A)^A] d²s`
+are divided by `P_inel(b)` (means over inelastic events) and mapped to
+`c_b` with the optical `c_b(b)`; for Au+Au at 30 mb, `⟨N_part⟩ = 371` and
+`⟨N_coll⟩ = 881` at `b = 0`. In the most peripheral events (about the last 7%
+for Au+Au) the optical `N_part / P_inel` falls below 2, as the optical model
+treats the nucleons and `P_inel` with different approximations; there they
+are set to their minimum for an inelastic collision, 2 and 1. With only two
+mean parameters the shape of `n̄(c_b)` is fixed by the geometry, `μ` is the
+number of particles per source and `f` (limited to `[0, 1]`) the fraction of
+participant-like (soft) production. The start values come from a linear
+least squares fit of `μf` and `μ(1 - f)` in the limit of vanishing
+fluctuations. On a toy of 10⁶ events generated with this model (Au+Au, 30 mb,
+`θ = 1`, `μ = 0.3`, `f = 0.8`) the fit gives `θ = 0.989 ± 0.017`,
+`μ = 0.2997 ± 0.0015`, `f = 0.799 ± 0.005` in 0.4 s. Unlike in the Monte
+Carlo Glauber fit, the fluctuations come from the kernel (`θ`), not from
+event-by-event `N_part` and `N_coll`.
 
 The parameter vector is `theta` followed by the mean parameters. `n_knee = n̄(0)`
 is the knee of the distribution, `σ(0) = √(θ n_knee)` the width of the
@@ -180,7 +210,7 @@ fit: (
     fit_min: 10,                  // fit range: bins with centers in [fit_min, fit_max]
     // fit_max: 400,
     kernel: Gamma,                // Gamma or Gauss
-    mean: ExpPoly(3),             // ExpPoly(J) or Indra
+    mean: ExpPoly(3),             // ExpPoly(J), Indra or Glauber(...)
     variance: Proportional,       // Proportional or Constant
     pile_up: false,               // fit pile-up with probability p
     fit_method: Likelihood,       // Likelihood or Chi2
@@ -211,9 +241,10 @@ fit: (
   extrapolation is weakly constrained: on the toy data with `fit_min: 10` the
   fitted total differs from the true one by several percent.
 - `params`: start value (`value`), step, limits (`min`, `max`) and `fixed` for
-  any parameter, by name (`theta`, `n_knee`, `a1`, ... or `x_max`, `x_min`,
-  `alpha`, `gamma`). By default `theta`, `n_knee`, `x_max`, `x_min`, `alpha`
-  and `gamma` are limited to positive values.
+  any parameter, by name (`theta`, `n_knee`, `a1`, ..., or `x_max`, `x_min`,
+  `alpha`, `gamma`, or `mu`, `f`). By default `theta`, `n_knee`, `x_max`,
+  `x_min`, `alpha`, `gamma` and `mu` are limited to positive values, and `f`
+  to `[0, 1]`.
 - `pile_up`: adds the parameter `p` (default limits `[0, 0.5]`, it can be
   fixed in `params` like any other); see [Pile-up](#pile-up).
 - `cb_points`: more points are only needed for very narrow kernels; the toy

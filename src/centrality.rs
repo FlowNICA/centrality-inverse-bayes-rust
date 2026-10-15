@@ -313,10 +313,10 @@ pub fn compute(
     fit: &StoredFit,
     impact: Option<&ImpactProfile>,
 ) -> Result<(CentralityResult, FinalObjects)> {
-    let model = fit.model;
+    let model = &fit.model;
     let p = &fit.values;
     let quad = Quadrature::new(config.cb_points);
-    let calc = Calc::new(model, p, &quad);
+    let calc = Calc::new(model.clone(), p, &quad);
     let data = &fit.data;
     let edges = &data.edges;
     let percents = config.class_edges();
@@ -551,7 +551,7 @@ fn propagate_errors(
             if !fit.model.is_valid(&p) {
                 return None;
             }
-            let calc = Calc::new(fit.model, &p, quad);
+            let calc = Calc::new(fit.model.clone(), &p, quad);
             let exact: Vec<f64> = percents.iter().map(|&e| calc.border(e / 100.)).collect();
             let per_class = (0..n_classes)
                 .map(|k| {

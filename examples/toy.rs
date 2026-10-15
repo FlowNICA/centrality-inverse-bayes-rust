@@ -37,12 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_events: usize = args.next().map_or(Ok(1_000_000), |s| s.parse())?;
     let seed: u64 = args.next().map_or(Ok(1), |s| s.parse())?;
 
-    let model = Model {
-        kernel: Kernel::Gamma,
-        mean: MeanModel::ExpPoly(3),
-        variance: VarianceModel::Proportional,
-        pile_up: false,
-    };
+    let model = Model::new(
+        Kernel::Gamma,
+        MeanModel::ExpPoly(3),
+        VarianceModel::Proportional,
+        false,
+    )?;
     let b_max = (SIGMA_INEL / PI).sqrt();
     let mut rng = SmallRng::seed_from_u64(seed);
     let (nbins, max) = if large { (2500, 25000.) } else { (500, 500.) };
