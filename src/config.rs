@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::config_file::{expand_home, read_section};
 use crate::error::{Error, Result};
 use crate::model::{BinModel, Kernel, MeanModel, Model, VarianceModel};
+use crate::profile::{Axis, HistogramSpec};
 
 /// Statistic minimized by the fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -153,7 +154,7 @@ pub struct FitConfig {
 
 /// Impact parameter distribution `P(b)` of inelastic events, used to turn
 /// `c_b` into `b`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ImpactParameter {
     /// `P(b) = 2πb/σ_inel` for `b < √(σ_inel/π)`: `c_b = πb²/σ_inel`.
@@ -171,6 +172,16 @@ pub enum ImpactParameter {
     },
     /// Histogram of `b` (fm) of inelastic events, e.g. from a model.
     Histogram { file: PathBuf, hist: String },
+    /// Projection on `b` (fm) of a 2-D histogram of `n` and `b` of all
+    /// inelastic events, e.g. the one of the `Histogram` mean or variance of
+    /// the fit; `x_axis` and `y_axis` say which axis holds `"n"` and which
+    /// `"b"`.
+    Histogram2D {
+        file: PathBuf,
+        hist: String,
+        x_axis: Axis,
+        y_axis: Axis,
+    },
     /// Branch with `b` (fm) of inelastic events, e.g. the `B` branch of an
     /// MC-Glauber tree.
     Tree {
@@ -365,23 +376,11 @@ impl FitConfig {
         {
             *file = expand_home(file);
         }
-        if let MeanModel::Histogram {
-            file,
-            impact_parameter,
-            ..
-        } = &mut config.mean
-        {
+        if let MeanModel::Histogram { file, .. } = &mut config.mean {
             *file = expand_home(file);
-            impact_parameter.expand_home();
         }
-        if let VarianceModel::Histogram {
-            file,
-            impact_parameter,
-            ..
-        } = &mut config.variance
-        {
+        if let VarianceModel::Histogram { file, .. } = &mut config.variance {
             *file = expand_home(file);
-            impact_parameter.expand_home();
         }
         config.validate()?;
         Ok(config)
@@ -389,7 +388,7 @@ impl FitConfig {
 
     /// The model; for the `Glauber` mean this computes the optical Glauber
     /// table, for the `Histogram` mean and variance it reads the histograms
-    /// and their `P(b)` (see [`Model::new`]).
+    /// (see [`Model::new`]).
     pub fn model(&self) -> Result<Model> {
         Model::new(
             self.kernel,
@@ -568,7 +567,9 @@ impl ImpactParameter {
     /// Expands a leading `~/` in the file names.
     pub fn expand_home(&mut self) {
         match self {
-            ImpactParameter::Histogram { file, .. } | ImpactParameter::Tree { file, .. } => {
+            ImpactParameter::Histogram { file, .. }
+            | ImpactParameter::Histogram2D { file, .. }
+            | ImpactParameter::Tree { file, .. } => {
                 *file = expand_home(file);
             }
             ImpactParameter::Glauber {
@@ -579,9 +580,32 @@ impl ImpactParameter {
         }
     }
 
+    /// The 2-D histogram of `Histogram2D`.
+    pub fn histogram_spec(&self) -> Option<HistogramSpec> {
+        match self {
+            ImpactParameter::Histogram2D {
+                file,
+                hist,
+                x_axis,
+                y_axis,
+            } => Some(HistogramSpec {
+                file: file.clone(),
+                hist: hist.clone(),
+                x_axis: *x_axis,
+                y_axis: *y_axis,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         let err = |m: String| Err(Error::Config(m));
         match self {
+            ImpactParameter::Histogram2D { .. } => self
+                .histogram_spec()
+                .expect("Histogram2D")
+                .validate()
+                .map_err(|e| Error::Config(format!("impact_parameter: {e}"))),
             ImpactParameter::Geometric { sigma_inel } if !(*sigma_inel > 0.) => {
                 err(format!("sigma_inel must be positive, got {sigma_inel}"))
             }
@@ -660,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn histogram_models_have_their_own_impact_parameter() {
+    fn histogram_models() {
         let dir = std::env::temp_dir().join(format!("cib-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.ron");
@@ -673,30 +697,20 @@ mod tests {
             FitConfig::from_ron_file(&path)
         };
         let c = write(
-            r#"mean: Histogram(file: "~/m.root", hist: "h2", x_axis: "b", y_axis: "n",
-                   impact_parameter: Histogram(file: "~/b.root", hist: "hB")),
-               variance: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n",
-                   impact_parameter: Geometric(sigma_inel: 685.0))"#,
+            r#"mean: Histogram(file: "~/m.root", hist: "h2", x_axis: "b", y_axis: "n"),
+               variance: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n")"#,
         )
         .unwrap();
-        let mean = c.mean.histogram_spec().unwrap();
-        assert!(!mean.file.starts_with("~"));
-        match mean.impact_parameter {
-            ImpactParameter::Histogram { file, .. } => assert!(!file.starts_with("~")),
-            other => panic!("{other:?}"),
-        }
+        assert!(!c.mean.histogram_spec().unwrap().file.starts_with("~"));
         assert_eq!(
-            c.variance.histogram_spec().unwrap().impact_parameter,
-            ImpactParameter::Geometric { sigma_inel: 685. }
+            Model::param_names_for(&c.mean, &c.variance, false),
+            ["variance_scale", "mean_scale"]
         );
-        /* missing or invalid P(b), same axis twice, unknown axis */
+        /* same axis twice, unknown axis, P(b) is not set separately */
         let bad = [
-            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n")"#,
+            r#"variance: Histogram(file: "m.root", hist: "h2", x_axis: "n", y_axis: "n")"#,
+            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "x", y_axis: "n")"#,
             r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n",
-                   impact_parameter: Geometric(sigma_inel: -1.0))"#,
-            r#"variance: Histogram(file: "m.root", hist: "h2", x_axis: "n", y_axis: "n",
-                   impact_parameter: Geometric(sigma_inel: 685.0))"#,
-            r#"mean: Histogram(file: "m.root", hist: "h2", x_axis: "x", y_axis: "n",
                    impact_parameter: Geometric(sigma_inel: 685.0))"#,
         ];
         for text in bad {
@@ -799,6 +813,18 @@ mod tests {
                 .is_ok()
         );
         assert!(parse("Geometric(sigma_inel: -1)").unwrap().is_err());
+        let c = parse(r#"Histogram2D(file: "m.root", hist: "h2", x_axis: "b", y_axis: "n")"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c.impact_parameter.unwrap().histogram_spec().unwrap().x_axis,
+            Axis::B
+        );
+        assert!(
+            parse(r#"Histogram2D(file: "m.root", hist: "h2", x_axis: "b", y_axis: "b")"#)
+                .unwrap()
+                .is_err()
+        );
         let c = parse(r#"Glauber(nucleus_a: "Pb", nucleus_b: "Pb", sqrt_snn: 5020)"#)
             .unwrap()
             .unwrap();

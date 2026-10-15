@@ -6,8 +6,11 @@
 //! centers of `n` (bins with integer lower edges, `[k, k + 1)`, are at `k + 0.5`,
 //! as in the model, where a bin is the integral of a continuous density).
 //! Between the centers of the `b` bins they are interpolated linearly, outside
-//! they are constant. With the impact parameter distribution `P(b)` given
-//! with the histogram they become functions of `c_b`.
+//! they are constant.
+//!
+//! The histogram must contain all inelastic events: its projection on `b` is
+//! the impact parameter distribution `P(b)` that turns `b` into `c_b`, the
+//! fraction of all inelastic events with a smaller `b`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -15,7 +18,6 @@ use std::path::{Path, PathBuf};
 use oxiroot::prelude::*;
 use serde::Deserialize;
 
-use crate::config::ImpactParameter;
 use crate::error::{Error, Result};
 use crate::impact::ImpactProfile;
 
@@ -48,15 +50,14 @@ impl fmt::Display for Axis {
     }
 }
 
-/// A 2-D histogram of `n` and `b` (fm), which of its axes holds which, and
-/// the distribution `P(b)` that turns `b` into `c_b`.
+/// A 2-D histogram of `n` and `b` (fm) of all inelastic events, and which
+/// of its axes holds which.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistogramSpec {
     pub file: PathBuf,
     pub hist: String,
     pub x_axis: Axis,
     pub y_axis: Axis,
-    pub impact_parameter: ImpactParameter,
 }
 
 impl HistogramSpec {
@@ -68,44 +69,50 @@ impl HistogramSpec {
                 self.hist, self.x_axis
             )));
         }
-        self.impact_parameter.validate()
+        Ok(())
     }
 
-    /// RON form of the fields, `file: "f.root", hist: "h", x_axis: "b",
-    /// y_axis: "n", impact_parameter: Geometric(sigma_inel: 685.0)`.
+    /// RON form of the fields, `file: "f.root", hist: "h", x_axis: "b", y_axis: "n"`.
     pub fn ron_fields(&self) -> String {
         format!(
-            "file: {:?}, hist: {:?}, x_axis: \"{}\", y_axis: \"{}\", impact_parameter: {}",
+            "file: {:?}, hist: {:?}, x_axis: \"{}\", y_axis: \"{}\"",
             self.file.display().to_string(),
             self.hist,
             self.x_axis,
-            self.y_axis,
-            ron::to_string(&self.impact_parameter).expect("P(b) settings serialize to RON")
+            self.y_axis
         )
     }
 
-    /// Reads the histogram and `P(b)`: the mean and variance of `n` versus `c_b`.
+    /// Reads the histogram: the mean and variance of `n` in each bin of `b`,
+    /// and `P(b)` from its projection on `b`, which together give them versus
+    /// `c_b`.
     pub fn build(&self) -> Result<CbProfile> {
+        let h = self.read()?;
+        let b_on_x = self.x_axis == Axis::B;
+        let description = self.description(&self.file);
         Ok(CbProfile {
-            profile: self.read()?,
-            impact: ImpactProfile::from_config(&self.impact_parameter)?,
+            profile: BProfile::from_histogram(&h, b_on_x, &description)?,
+            impact: b_projection(&h, b_on_x, &description)?,
         })
     }
 
-    /// Reads the histogram and computes the mean and variance of `n` in each
-    /// bin of `b`.
-    pub fn read(&self) -> Result<BProfile> {
+    /// Reads the histogram: `P(b)` from its projection on `b`.
+    pub fn impact_profile(&self) -> Result<ImpactProfile> {
+        let h = self.read()?;
+        b_projection(&h, self.x_axis == Axis::B, &self.description(&self.file))
+    }
+
+    fn read(&self) -> Result<Hist2D> {
         self.validate()?;
         let f = FileReader::open(&self.file)
             .map_err(|e| Error::Input(format!("cannot open {}: {e}", self.file.display())))?;
-        let h = Hist2D::read_root(&f, &self.hist).map_err(|e| {
+        Hist2D::read_root(&f, &self.hist).map_err(|e| {
             Error::Input(format!(
                 "cannot read 2-D histogram '{}' from {}: {e}",
                 self.hist,
                 self.file.display()
             ))
-        })?;
-        BProfile::from_histogram(&h, self.x_axis == Axis::B, &self.description(&self.file))
+        })
     }
 
     fn description(&self, file: &Path) -> String {
@@ -209,6 +216,37 @@ impl BProfile {
     }
 }
 
+/// `P(b)` from the projection of the histogram on `b`: all entries in each
+/// bin of `b`, including those in the under- and overflow of `n`. Entries
+/// outside the axis of `b` are an error, as `P(b)` would miss them.
+pub fn b_projection(h: &Hist2D, b_on_x: bool, description: &str) -> Result<ImpactProfile> {
+    let (nx, ny) = (h.nx(), h.ny());
+    let cell = |ix: usize, iy: usize| h.contents[ix + (nx + 2) * iy];
+    let (nb, nn, b_axis) = if b_on_x {
+        (nx, ny, &h.xaxis)
+    } else {
+        (ny, nx, &h.yaxis)
+    };
+    let slice = |ib: usize| -> f64 {
+        (0..=nn + 1)
+            .map(|i_n| if b_on_x { cell(ib, i_n) } else { cell(i_n, ib) })
+            .sum()
+    };
+    let outside = slice(0) + slice(nb + 1);
+    if outside > 0. {
+        return Err(Error::Input(format!(
+            "{description}: {outside} entries lie outside the axis of b, so its projection \
+             is not P(b) of all events; the histogram must contain all inelastic events"
+        )));
+    }
+    let counts: Vec<f64> = (1..=nb).map(slice).collect();
+    ImpactProfile::from_counts(
+        &b_axis.edges(),
+        &counts,
+        format!("projection on b of {description}"),
+    )
+}
+
 /// A `BProfile` as a function of `c_b`, through `b(c_b)` of `P(b)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CbProfile {
@@ -276,7 +314,16 @@ mod tests {
             assert!((p.mean_at(1.) - 7.25).abs() < 1e-12);
             assert!((p.mean_at(0.) - 8.25).abs() < 1e-12);
             assert!((p.mean_at(3.9) - 4.25).abs() < 1e-12);
+            /* P(b): 4 entries in each of the bins [0, 1), [1, 2), [2, 3) */
+            let ip = b_projection(&filled(b_on_x), b_on_x, "test").unwrap();
+            assert!((ip.cb_of_b(1.) - 1. / 3.).abs() < 1e-12);
+            assert!((ip.cb_of_b(1.5) - 0.5).abs() < 1e-12);
+            assert!((ip.b_max() - 3.).abs() < 1e-5);
         }
+        /* entries outside the axis of b */
+        let mut h = filled(true);
+        h.fill(20., 5.);
+        assert!(b_projection(&h, true, "test").is_err());
     }
 
     #[test]
@@ -290,13 +337,6 @@ mod tests {
             hist: "h".into(),
             x_axis: Axis::B,
             y_axis: Axis::B,
-            impact_parameter: ImpactParameter::Geometric { sigma_inel: 685. },
-        };
-        assert!(spec.validate().is_err());
-        let spec = HistogramSpec {
-            y_axis: Axis::N,
-            impact_parameter: ImpactParameter::Geometric { sigma_inel: -1. },
-            ..spec
         };
         assert!(spec.validate().is_err());
     }

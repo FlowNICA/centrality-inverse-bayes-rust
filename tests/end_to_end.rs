@@ -745,7 +745,8 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
     let events = toy_events(300_000, 21, None);
     let data = dir.join("toy.root");
     write_toy(&data, &events, 500, 500.);
-    /* the model: n versus b of an independent toy, with b on x or on y */
+    /* the model: n versus b of all events of an independent toy, with b on
+     * x or on y; P(b) is its projection on b */
     let mut n_vs_b = Hist::reg(200, 0., 15.)
         .reg(500, 0., 500.)
         .name("h2_n_b")
@@ -754,22 +755,22 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
         .reg(200, 0., 15.)
         .name("h2_b_n")
         .double();
-    let mut b_hist = Hist::reg(400, 0., 15.).name("hB").double();
     for (b, n) in toy_events(1_000_000, 22, None) {
         n_vs_b.fill(b, n);
         b_vs_n.fill(n, b);
-        b_hist.fill(b);
     }
+    /* an event outside the axis of b: the projection is not P(b) */
+    let mut outside = n_vs_b.clone().named("h2_outside");
+    outside.fill(20., 5.);
     let model = dir.join("model.root");
     FileWriter::create(&model)
         .add(&n_vs_b)
         .add(&b_vs_n)
-        .add(&b_hist)
+        .add(&outside)
         .write(Compression::default())
         .unwrap();
 
-    /* each with its own P(b), here the same distribution given in three
-     * ways; Free normalization */
+    /* Free normalization; the classes use P(b) of the same histogram */
     let config = dir.join("config.ron");
     std::fs::write(
         &config,
@@ -781,20 +782,14 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
                     out_dir: "{dir}",
                     fit_min: 10,
                     normalization: Free,
-                    mean: Histogram(
-                        file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n",
-                        impact_parameter: Geometric(sigma_inel: {SIGMA_INEL:?}),
-                    ),
-                    variance: Histogram(
-                        file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n",
-                        impact_parameter: Histogram(file: "{model}", hist: "hB"),
-                    ),
+                    mean: Histogram(file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n"),
+                    variance: Histogram(file: "{model}", hist: "h2_n_b", x_axis: "b", y_axis: "n"),
                 ),
                 centrality: (
                     fit_file: "{dir}/bayes_fit.root",
                     out_dir: "{dir}",
                     classes: [0, 10, 20, 40, 60, 80, 100],
-                    impact_parameter: Tree(file: "{data}", tree: "events", branch: "B"),
+                    impact_parameter: Histogram2D(file: "{model}", hist: "h2_b_n", x_axis: "n", y_axis: "b"),
                 ),
             )"#,
             data = data.display(),
@@ -809,7 +804,10 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
     assert_eq!(r.names, ["variance_scale", "mean_scale"]);
     /* the model is the truth: both scales are 1 */
     for ((name, v), e) in r.names.iter().zip(&r.values).zip(&r.errors) {
-        assert!((v - 1.).abs() < 0.03 && *e > 0., "{name} = {v} +- {e}");
+        assert!(
+            *e > 0. && *e < 0.05 && (v - 1.).abs() < 3. * e,
+            "{name} = {v} +- {e}"
+        );
     }
     assert!(r.reduced_statistic() < 1.5, "{}", r.reduced_statistic());
     assert!(
@@ -819,26 +817,24 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
     );
 
     /* the same with b on the y axis */
-    let mut transposed = fit.clone();
-    transposed.out_dir = dir.join("transposed");
-    let swap = |text: String| {
-        text.replace(
-            r#""h2_n_b", x_axis: "b", y_axis: "n""#,
-            r#""h2_b_n", x_axis: "n", y_axis: "b""#,
+    let with_hist = |name: &str, x: &str, y: &str| {
+        format!(
+            r#"Histogram(file: "{}", hist: "{name}", x_axis: "{x}", y_axis: "{y}")"#,
+            model.display()
         )
     };
-    transposed.mean = swap(fit.mean.to_string()).parse().unwrap();
-    transposed.variance = swap(fit.variance.to_string()).parse().unwrap();
-    assert!(transposed.mean.to_string().contains("h2_b_n"));
-    assert!(transposed.variance.to_string().contains("hB"));
+    let mut transposed = fit.clone();
+    transposed.out_dir = dir.join("transposed");
+    transposed.mean = with_hist("h2_b_n", "n", "b").parse().unwrap();
+    transposed.variance = with_hist("h2_b_n", "n", "b").parse().unwrap();
     let t = centrality_inverse_bayes_rust::run(transposed).unwrap();
     for (a, b) in t.values.iter().zip(&r.values) {
         assert!((a - b).abs() < 1e-6 * b, "{a} vs {b}");
     }
 
-    /* the fit file keeps both P(b), and the classes reproduce the true <b> */
+    /* the fit file restores the model, and the classes reproduce the true <b> */
     let stored = read_fit(&dir.join(FIT_FILE_NAME)).unwrap();
-    /* (the models themselves differ: σ_inel of a P(b) histogram is NaN) */
+    /* (the models themselves differ: σ_inel of a tabulated P(b) is NaN) */
     assert_eq!(stored.model.mean, r.model.mean);
     assert_eq!(stored.model.variance, r.model.variance);
     assert_eq!(stored.values, r.values);
@@ -854,18 +850,11 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
         );
     }
 
-    /* a P(b) that cannot be read is reported */
-    let mut missing = fit;
-    missing.variance = fit_variance_with_missing_b(&missing.variance);
-    let err = centrality_inverse_bayes_rust::run(missing)
+    /* events outside the axis of b are reported */
+    let mut bad = fit;
+    bad.variance = with_hist("h2_outside", "b", "n").parse().unwrap();
+    let err = centrality_inverse_bayes_rust::run(bad)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("hBMissing"), "{err}");
-}
-
-fn fit_variance_with_missing_b(v: &VarianceModel) -> VarianceModel {
-    v.to_string()
-        .replace(r#""hB""#, r#""hBMissing""#)
-        .parse()
-        .unwrap()
+    assert!(err.contains("outside the axis of b"), "{err}");
 }

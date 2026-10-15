@@ -30,7 +30,6 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::config::ImpactParameter;
 use crate::error::Error;
 use crate::numeric::{composite_gauss_legendre, gamma_pq, ln_gamma, normal_cdf, normal_sf};
 use crate::optical::{GlauberMean, GlauberSpec};
@@ -86,14 +85,13 @@ pub enum MeanModel {
     },
     /// `n̄ = mean_scale · ⟨n⟩(b)`, with the mean of `n` versus `b` from a 2-D
     /// histogram of `n` and `b` (e.g. of a model; `x_axis` and `y_axis` say
-    /// which axis holds `"n"` and which `"b"`), and `b(c_b)` from its own
-    /// `impact_parameter` distribution `P(b)`.
+    /// which axis holds `"n"` and which `"b"`). The histogram must contain
+    /// all inelastic events: its projection on `b` gives `b(c_b)`.
     Histogram {
         file: PathBuf,
         hist: String,
         x_axis: Axis,
         y_axis: Axis,
-        impact_parameter: ImpactParameter,
     },
 }
 
@@ -120,13 +118,11 @@ impl MeanModel {
                 hist,
                 x_axis,
                 y_axis,
-                impact_parameter,
             } => Some(HistogramSpec {
                 file: file.clone(),
                 hist: hist.clone(),
                 x_axis: *x_axis,
                 y_axis: *y_axis,
-                impact_parameter: impact_parameter.clone(),
             }),
             _ => None,
         }
@@ -166,7 +162,7 @@ pub enum VarianceModel {
     /// `σ² = θ · n̄(0)`: constant width (scenario B of Das et al.).
     Constant,
     /// `σ² = variance_scale · Var(n)(b)`, with the variance of `n` versus `b`
-    /// from a 2-D histogram of `n` and `b` and its own `P(b)`, as for the
+    /// from a 2-D histogram of `n` and `b` of all inelastic events, as for the
     /// `Histogram` mean. The first parameter is then `variance_scale` instead
     /// of `theta`.
     Histogram {
@@ -174,7 +170,6 @@ pub enum VarianceModel {
         hist: String,
         x_axis: Axis,
         y_axis: Axis,
-        impact_parameter: ImpactParameter,
     },
 }
 
@@ -195,13 +190,11 @@ impl VarianceModel {
                 hist,
                 x_axis,
                 y_axis,
-                impact_parameter,
             } => Some(HistogramSpec {
                 file: file.clone(),
                 hist: hist.clone(),
                 x_axis: *x_axis,
                 y_axis: *y_axis,
-                impact_parameter: impact_parameter.clone(),
             }),
             _ => None,
         }
@@ -241,7 +234,7 @@ pub struct Model {
 impl Model {
     /// The model; for the `Glauber` mean this computes the optical Glauber
     /// `⟨N_part⟩` and `⟨N_coll⟩` (a fraction of a second), for the
-    /// `Histogram` mean and variance it reads the histograms and their `P(b)`.
+    /// `Histogram` mean and variance it reads the histograms.
     pub fn new(
         kernel: Kernel,
         mean: MeanModel,
@@ -649,8 +642,7 @@ impl fmt::Display for Kernel {
 }
 
 /// The RON form of the configuration, e.g. `Proportional` or
-/// `Histogram(file: "m.root", hist: "h", x_axis: "b", y_axis: "n",
-/// impact_parameter: Geometric(sigma_inel: 685.0))`.
+/// `Histogram(file: "m.root", hist: "h", x_axis: "b", y_axis: "n")`.
 impl fmt::Display for VarianceModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1049,11 +1041,6 @@ mod tests {
             hist: "h2_n_b".into(),
             x_axis: Axis::B,
             y_axis: Axis::N,
-            impact_parameter: ImpactParameter::Fermi {
-                sigma_inel: None,
-                b0: Some(14.5),
-                width: 0.4,
-            },
         };
         let text = mean.to_string();
         assert_eq!(text.parse::<MeanModel>().unwrap(), mean, "{text}");
@@ -1062,10 +1049,6 @@ mod tests {
             hist: "h".into(),
             x_axis: Axis::N,
             y_axis: Axis::B,
-            impact_parameter: ImpactParameter::Histogram {
-                file: "b.root".into(),
-                hist: "hB".into(),
-            },
         };
         let text = variance.to_string();
         assert_eq!(text.parse::<VarianceModel>().unwrap(), variance, "{text}");

@@ -87,24 +87,13 @@ event-by-event `N_part` and `N_coll`.
 ### Mean and variance from a histogram of `n` versus `b`
 
 The `Histogram` mean and variance take the dependence on the impact
-parameter from a 2-D histogram of `n` and `b` (fm), e.g. of a model
-transported through the detector simulation, with one fit parameter each:
+parameter from a 2-D histogram of `n` and `b` (fm) of **all inelastic
+events**, e.g. of a model transported through the detector simulation,
+with one fit parameter each:
 
 ```ron
-mean: Histogram(
-    file: "~/model.root",
-    hist: "h2_track_multiplicity_b",
-    x_axis: "b",
-    y_axis: "n",
-    impact_parameter: Histogram(file: "~/model.root", hist: "h1_b"),
-),
-variance: Histogram(
-    file: "~/model.root",
-    hist: "h2_track_multiplicity_b",
-    x_axis: "b",
-    y_axis: "n",
-    impact_parameter: Glauber(nucleus_a: "Xe", nucleus_b: "Cs", sqrt_snn: 3.26),
-),
+mean: Histogram(file: "~/model.root", hist: "h2_n_b", x_axis: "b", y_axis: "n"),
+variance: Histogram(file: "~/model.root", hist: "h2_n_b", x_axis: "b", y_axis: "n"),
 ```
 
 `x_axis` and `y_axis` say which axis holds `"n"` and which `"b"` (both
@@ -113,11 +102,21 @@ from the bin centers of `n` (for integer multiplicities in bins `[k, k + 1)`
 that is `k + 0.5`, as in the model, where a bin is the integral of a
 continuous density); they are interpolated linearly between the bin centers
 of `b` and constant beyond the first and last filled bins (empty bins are
-skipped). `c_b` is turned into `b` with the distribution `P(b)` given in
-`impact_parameter` of each of them (required, with the same choices as
-[`impact_parameter`](#define-centrality) of `define-centrality`), so the mean,
-the variance and the classes can each use their own `P(b)`, e.g. as a
-systematic variation. Both are stored with the model in the fit file. Then
+skipped).
+
+`c_b` is turned into `b` with `P(b)` from the projection of the same
+histogram on `b` (all entries in each bin of `b`, including the under- and
+overflow of `n`), so that the moments and `P(b)` come from the same events.
+This is why the histogram must contain all inelastic events, without any
+trigger, vertex or track selection: `c_b` is the fraction of all inelastic
+events with a smaller `b`, to which the centrality percents refer. If, for
+example, a selection keeps 79% of the events, losing them only at large
+`b`, the projection gives `c_b` 1/0.79 = 1.27 times too large at all smaller
+`b`, and a 0-10% class is really about 0-8% (the fit may even look better,
+as it then describes the selected sample). Entries outside the axis of `b`
+stop the fit, as `P(b)` would miss them. The `impact_parameter` of
+`define-centrality` is independent of it and only used for the classes; for
+the same `P(b)` there, use `Histogram2D` with the same histogram. Then
 
 ```
 n̄(c_b)  = mean_scale     · ⟨n⟩(b(c_b))
@@ -135,7 +134,8 @@ fluctuations, and `variance_scale` is scanned from 0.05 to 20.
 
 On toys (10⁶ events with a known `n̄(c_b)` and Gamma kernel filled into the
 2-D histogram, 3·10⁵ events fitted with `normalization: Free`), both scales
-are 1 within 3%, `N` within 2% and `<b>` of the classes within 0.1 fm of the
+are 1 within their errors (e.g. `variance_scale = 0.967 ± 0.031`, `mean_scale`
+within 0.2%), `N` within 2% and `<b>` of the classes within 0.1 fm of the
 truth. The kernel shape stays a Gamma (or Gauss) distribution with these
 moments: if the distribution of `n` at fixed `b` of the model is not of this
 shape, the fit is poor even with both scales at 1.
@@ -371,6 +371,12 @@ centrality: (
     or computed from `σ_inel`;
   - `Histogram(file: "...", hist: "hB")`: a histogram of `b` (fm) of
     inelastic events, e.g. from a model;
+  - `Histogram2D(file: "...", hist: "h2_n_b", x_axis: "b", y_axis: "n")`: the
+    projection on `b` of a 2-D histogram of `n` and `b` of all inelastic
+    events (`x_axis`/`y_axis` as for the
+    [`Histogram` mean and variance](#mean-and-variance-from-a-histogram-of-n-versus-b)),
+    e.g. the same histogram as in the fit, so that the classes use the same
+    `P(b)` as the fit;
   - `Tree(file: "...", tree: "nt_Au_Au", branch: "B")`: the `b` of each event,
     e.g. the `B` branch of the MC-Glauber tree used by centrality-glauber-rust;
   - `Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)`: the optical

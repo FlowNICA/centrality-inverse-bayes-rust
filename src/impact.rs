@@ -59,6 +59,9 @@ impl ImpactProfile {
                 })?;
                 Self::from_histogram(&h, format!("histogram '{hist}' of {}", file.display()))
             }
+            ImpactParameter::Histogram2D { .. } => {
+                ip.histogram_spec().expect("Histogram2D").impact_profile()
+            }
             ImpactParameter::Tree { file, tree, branch } => {
                 let f = FileReader::open(file)
                     .map_err(|e| Error::Input(format!("cannot open {}: {e}", file.display())))?;
@@ -125,7 +128,14 @@ impl ImpactProfile {
     pub fn from_histogram(h: &Hist1D, description: String) -> Result<Self> {
         let edges = h.edges();
         let n = edges.len() - 1;
-        let counts: Vec<f64> = (1..=n).map(|i| h.contents[i].max(0.)).collect();
+        let counts: Vec<f64> = (1..=n).map(|i| h.contents[i]).collect();
+        Self::from_counts(&edges, &counts, description)
+    }
+
+    /// From the counts in bins of `b` with the given `counts.len() + 1`
+    /// edges: `c_b` is their cumulative distribution, linear within the bins.
+    pub fn from_counts(edges: &[f64], counts: &[f64], description: String) -> Result<Self> {
+        let counts: Vec<f64> = counts.iter().map(|c| c.max(0.)).collect();
         let total: f64 = counts.iter().sum();
         if !(total > 0.) || !(edges[0] >= 0.) {
             return Err(Error::Input(format!(
