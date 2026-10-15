@@ -190,30 +190,23 @@ impl<'a> Calc<'a> {
         x
     }
 
-    /// `P(x_lo <= n < x_hi | c_b)` integrated with the node weights `w`.
-    fn class_weights(&self, x_lo: f64, x_hi: f64) -> Vec<f64> {
+    /// `P(recorded in the class | c_b)` times the node weights `w`.
+    fn class_weights(&self, sel: &Selection) -> Vec<f64> {
         self.kernels
             .iter()
             .zip(&self.quad.weights)
-            .map(|(k, w)| {
-                let s_lo = if x_lo == f64::NEG_INFINITY {
-                    1.
-                } else {
-                    k.survival(x_lo)
-                };
-                w * (s_lo - k.survival(x_hi)).max(0.)
-            })
+            .map(|(k, w)| w * sel.probability(k))
             .collect()
     }
 
-    /// Mean and RMS of `c_b` and of `b` in the class, and its fraction of events.
+    /// Mean and RMS of `c_b` and of `b` of the recorded events in the class,
+    /// and their fraction of all events.
     fn class_moments(
         &self,
-        x_lo: f64,
-        x_hi: f64,
+        sel: &Selection,
         impact: Option<&ImpactProfile>,
     ) -> (f64, (f64, f64), Option<(f64, f64)>) {
-        let weights = self.class_weights(x_lo, x_hi);
+        let weights = self.class_weights(sel);
         let total: f64 = weights.iter().sum();
         let moments = |f: &dyn Fn(f64) -> f64| {
             let (mut s1, mut s2) = (0., 0.);
@@ -230,8 +223,8 @@ impl<'a> Calc<'a> {
         (total, cb, b)
     }
 
-    /// `∫ P(x_lo <= n < x_hi | c_b) dc_b` over `[c0, c1]`.
-    fn class_probability_in(&self, x_lo: f64, x_hi: f64, c0: f64, c1: f64) -> f64 {
+    /// `∫ P(recorded in the class | c_b) dc_b` over `[c0, c1]`.
+    fn class_probability_in(&self, sel: &Selection, c0: f64, c1: f64) -> f64 {
         if !(c1 > c0) {
             return 0.;
         }
@@ -239,17 +232,112 @@ impl<'a> Calc<'a> {
         q.nodes
             .iter()
             .zip(&q.weights)
-            .map(|(&cb, &w)| {
-                let k = self.model.kernel_at(self.p, cb);
-                let s_lo = if x_lo == f64::NEG_INFINITY {
-                    1.
-                } else {
-                    k.survival(x_lo)
-                };
-                w * (s_lo - k.survival(x_hi)).max(0.)
-            })
+            .map(|(&cb, &w)| w * sel.probability(&self.model.kernel_at(self.p, cb)))
             .sum()
     }
+}
+
+/// The values of the observable selected by a class, `[x_lo, x_hi)`, as
+/// intervals `[bounds[j], bounds[j+1])` with the trigger efficiency
+/// `weights[j]` (adjacent intervals with the same efficiency are merged).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub bounds: Vec<f64>,
+    pub weights: Vec<f64>,
+}
+
+impl Selection {
+    /// The class `[x_lo, x_hi)` for the efficiency `efficiency[i]` of the
+    /// data bins (the first bin's below the histogram, 1 above it).
+    pub fn new(edges: &[f64], efficiency: &[f64], x_lo: f64, x_hi: f64) -> Self {
+        let mut pieces: Vec<(f64, f64, f64)> = Vec::new();
+        let n_bins = edges.len() - 1;
+        if x_lo < edges[0] {
+            pieces.push((x_lo, edges[0].min(x_hi), efficiency[0]));
+        }
+        for i in 0..n_bins {
+            let (lo, hi) = (edges[i].max(x_lo), edges[i + 1].min(x_hi));
+            if lo < hi {
+                pieces.push((lo, hi, efficiency[i]));
+            }
+        }
+        if x_hi > edges[n_bins] {
+            pieces.push((edges[n_bins].max(x_lo), x_hi, 1.));
+        }
+        let mut bounds = Vec::with_capacity(pieces.len() + 1);
+        let mut weights: Vec<f64> = Vec::with_capacity(pieces.len());
+        for (lo, hi, w) in pieces {
+            if bounds.is_empty() {
+                bounds.push(lo);
+            }
+            if weights.last() == Some(&w) {
+                *bounds.last_mut().expect("bound") = hi;
+            } else {
+                weights.push(w);
+                bounds.push(hi);
+            }
+        }
+        if bounds.is_empty() {
+            bounds = vec![x_lo, x_hi];
+            weights = vec![0.];
+        }
+        Selection { bounds, weights }
+    }
+
+    /// `Σ_j weights[j] P(bounds[j] <= n < bounds[j+1])` for a kernel.
+    fn probability(&self, k: &NodeKernel) -> f64 {
+        let survival = |x: f64| {
+            if x == f64::NEG_INFINITY {
+                1.
+            } else {
+                k.survival(x)
+            }
+        };
+        let mut prev = survival(self.bounds[0]);
+        let mut sum = 0.;
+        for (j, w) in self.weights.iter().enumerate() {
+            let next = survival(self.bounds[j + 1]);
+            sum += w * (prev - next).max(0.);
+            prev = next;
+        }
+        sum
+    }
+}
+
+/// Trigger efficiency of each data bin: 1 from the fit range on, where the
+/// trigger must be fully efficient; below it, data over fit, made
+/// non-decreasing with `n` (weighted pool-adjacent-violators, with the
+/// expected counts as weights, which also smooths the statistical
+/// fluctuations) and limited to `[0, 1]`.
+pub fn trigger_efficiency(
+    data: &crate::data::DataHistogram,
+    fit_counts: &[f64],
+    fit_min: f64,
+) -> Vec<f64> {
+    let n_bins = data.n_bins();
+    let first_fit_bin = data.edges[..n_bins].partition_point(|&e| e < fit_min);
+    /* blocks of (sum of data, sum of fit, number of bins) */
+    let mut blocks: Vec<(f64, f64, usize)> = Vec::new();
+    for (&d, &m) in data.counts.iter().zip(fit_counts).take(first_fit_bin) {
+        blocks.push((d, m, 1));
+        while blocks.len() >= 2 {
+            let (d1, m1, n1) = blocks[blocks.len() - 1];
+            let (d0, m0, n0) = blocks[blocks.len() - 2];
+            /* merge while the efficiency decreases (an empty fit merges) */
+            if m1 > 0. && m0 > 0. && d0 / m0 <= d1 / m1 {
+                break;
+            }
+            blocks.pop();
+            *blocks.last_mut().expect("block") = (d0 + d1, m0 + m1, n0 + n1);
+        }
+    }
+    let mut efficiency = Vec::with_capacity(n_bins);
+    for (d, m, n) in blocks {
+        let e = if m > 0. { (d / m).clamp(0., 1.) } else { 1. };
+        efficiency.extend(std::iter::repeat_n(e, n));
+    }
+    efficiency.resize(n_bins, 1.);
+    efficiency
 }
 
 /// Reads the fit file, defines the classes, writes the output file and the
@@ -389,6 +477,18 @@ pub fn compute(
         }
     }
 
+    let model_counts: Vec<f64> = match &pile_up_counts {
+        Some(d) => single_counts.iter().zip(d).map(|(s, d)| s + d).collect(),
+        None => single_counts.clone(),
+    };
+    /* the Bayes results describe the recorded events: each bin weighted with
+     * the trigger efficiency (1 in and above the fit range) */
+    let efficiency = trigger_efficiency(data, &model_counts, fit.fit_range.0);
+    let n_classes = percents.len() - 1;
+    let selections: Vec<Selection> = (0..n_classes)
+        .map(|k| Selection::new(edges, &efficiency, borders[k + 1], borders[k]))
+        .collect();
+
     let display = |x: f64| {
         if x == f64::INFINITY {
             edges[edges.len() - 1]
@@ -399,14 +499,13 @@ pub fn compute(
         }
     };
 
-    let n_classes = percents.len() - 1;
     let mut classes: Vec<CentralityClass> = (0..n_classes)
         .into_par_iter()
         .map(|k| {
             let (x_hi, x_lo) = (borders[k], borders[k + 1]);
             let c_hi = calc.centrality(x_hi);
             let c_lo = calc.centrality(x_lo);
-            let (total, (cb_mean, cb_rms), b) = calc.class_moments(x_lo, x_hi, impact);
+            let (total, (cb_mean, cb_rms), b) = calc.class_moments(&selections[k], impact);
             let cb = Stats {
                 mean: cb_mean,
                 rms: cb_rms,
@@ -469,17 +568,13 @@ pub fn compute(
 
     let mut n_samples = 0;
     if config.n_error_samples > 0 {
-        let (errors, used) = propagate_errors(config, fit, impact, &quad, &percents, &borders)?;
+        let (errors, used) = propagate_errors(config, fit, impact, &quad, &percents, &selections)?;
         n_samples = used;
         for (c, e) in classes.iter_mut().zip(errors) {
             c.errors = Some(e);
         }
     }
 
-    let model_counts: Vec<f64> = match &pile_up_counts {
-        Some(d) => single_counts.iter().zip(d).map(|(s, d)| s + d).collect(),
-        None => single_counts,
-    };
     let result = CentralityResult {
         classes,
         source: config.fit_file.clone(),
@@ -493,7 +588,13 @@ pub fn compute(
         efficiency: data.total / fit.norm,
         normalization: fit.normalization,
     };
-    let objects = final_objects(config, fit, impact, &calc, &result, &borders, &model_counts)?;
+    let bins = ClassBins {
+        borders: &borders,
+        selections: &selections,
+        model_counts: &model_counts,
+        efficiency: &efficiency,
+    };
+    let objects = final_objects(config, fit, impact, &calc, &result, &bins)?;
     Ok((result, objects))
 }
 
@@ -534,7 +635,7 @@ fn propagate_errors(
     impact: Option<&ImpactProfile>,
     quad: &Quadrature,
     percents: &[f64],
-    borders: &[f64],
+    selections: &[Selection],
 ) -> Result<(Vec<ClassErrors>, usize)> {
     let free: Vec<usize> = (0..fit.values.len()).filter(|&i| !fit.fixed[i]).collect();
     let n = fit.values.len();
@@ -571,7 +672,7 @@ fn propagate_errors(
             let exact: Vec<f64> = percents.iter().map(|&e| calc.border(e / 100.)).collect();
             let per_class = (0..n_classes)
                 .map(|k| {
-                    let (_, (cm, cr), b) = calc.class_moments(borders[k + 1], borders[k], impact);
+                    let (_, (cm, cr), b) = calc.class_moments(&selections[k], impact);
                     let (bm, br) = b.unwrap_or((f64::NAN, f64::NAN));
                     [cm, cr, bm, br]
                 })
@@ -640,15 +741,31 @@ pub fn integer_borders(classes: &[CentralityClass]) -> bool {
 }
 
 /// The tree `Result`, the class histograms and graphs.
+/// The classes in terms of the data bins.
+struct ClassBins<'a> {
+    /// Class borders, from the most central class on (±∞ at the ends).
+    borders: &'a [f64],
+    selections: &'a [Selection],
+    /// Expected recorded events in each data bin.
+    model_counts: &'a [f64],
+    /// Trigger efficiency of each data bin.
+    efficiency: &'a [f64],
+}
+
 fn final_objects(
     config: &CentralityConfig,
     fit: &StoredFit,
     impact: Option<&ImpactProfile>,
     calc: &Calc,
     result: &CentralityResult,
-    borders: &[f64],
-    model_counts: &[f64],
+    bins: &ClassBins,
 ) -> Result<FinalObjects> {
+    let ClassBins {
+        borders,
+        selections,
+        model_counts,
+        efficiency,
+    } = *bins;
     let classes = &result.classes;
     let data = &fit.data;
     let mut objects = FinalObjects::default();
@@ -789,12 +906,12 @@ fn final_objects(
     let per_class: Vec<(Hist1D, Option<Hist1D>)> = classes
         .par_iter()
         .map(|c| {
-            let k = c.number;
-            let (x_hi, x_lo) = (borders[k], borders[k + 1]);
-            let fraction = (c.fit_max_percent - c.fit_min_percent) / 100.;
+            let sel = &selections[c.number];
+            /* recorded fraction of all events in the class */
+            let fraction: f64 = calc.class_weights(sel).iter().sum();
             let density = |c0: f64, c1: f64, width: f64| {
                 if fraction > 0. {
-                    calc.class_probability_in(x_lo, x_hi, c0, c1) / fraction / width
+                    calc.class_probability_in(sel, c0, c1) / fraction / width
                 } else {
                     0.
                 }
@@ -865,6 +982,13 @@ fn final_objects(
     }
     objects.hists.push(histogram_like(
         &data.hist,
+        "Trigger_Efficiency",
+        "trigger efficiency used for the classes: data / fit below the fit range, made non-decreasing;n;efficiency",
+        efficiency,
+        None,
+    ));
+    objects.hists.push(histogram_like(
+        &data.hist,
         "Centrality_vs_Multiplicity",
         "upper percent of the class of each bin;n;centrality, %",
         &class_of_bin,
@@ -908,4 +1032,47 @@ fn final_objects(
         objects.hists_2d.push(h);
     }
     Ok(objects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_merges_intervals_of_equal_efficiency() {
+        let edges = [0., 1., 2., 3., 4.];
+        let eff = [0.2, 0.5, 1., 1.];
+        let s = Selection::new(&edges, &eff, 0.5, 3.5);
+        assert_eq!(s.bounds, vec![0.5, 1., 2., 3.5]);
+        assert_eq!(s.weights, vec![0.2, 0.5, 1.]);
+        /* open ends: below the histogram with the first bin, above with 1 */
+        let s = Selection::new(&edges, &eff, f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(s.bounds, vec![f64::NEG_INFINITY, 1., 2., f64::INFINITY]);
+        assert_eq!(s.weights, vec![0.2, 0.5, 1.]);
+        /* fully efficient: one interval, the probability of the class */
+        let s = Selection::new(&edges, &[1.; 4], 1., 3.);
+        assert_eq!((s.bounds.len(), s.weights.len()), (2, 1));
+        let k = NodeKernel::new(crate::model::Kernel::Gamma, 2., 1.);
+        let p = s.probability(&k);
+        assert!((p - (k.survival(1.) - k.survival(3.))).abs() < 1e-15);
+    }
+
+    #[test]
+    fn efficiency_curve_is_monotonic_and_bounded() {
+        let mut hist = oxiroot::prelude::Hist::reg(8, 0., 8.).double();
+        let counts = [10., 30., 25., 70., 95., 103., 98., 100.];
+        for (i, c) in counts.iter().enumerate() {
+            hist.fill_weight(i as f64 + 0.5, *c);
+        }
+        let data = crate::data::DataHistogram::new(hist).unwrap();
+        let fit = [100.; 8];
+        /* fit range from n = 5: efficiency 1 there */
+        let e = trigger_efficiency(&data, &fit, 5.);
+        assert_eq!(&e[5..], &[1., 1., 1.]);
+        /* 0.3 and 0.25 are pooled to 0.275 */
+        assert!((e[0] - 0.1).abs() < 1e-12);
+        assert!((e[1] - 0.275).abs() < 1e-12 && (e[2] - 0.275).abs() < 1e-12);
+        assert!((e[3] - 0.7).abs() < 1e-12 && (e[4] - 0.95).abs() < 1e-12);
+        assert!(e.windows(2).all(|w| w[0] <= w[1]));
+    }
 }

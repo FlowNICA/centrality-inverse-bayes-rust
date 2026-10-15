@@ -338,7 +338,8 @@ centrality: (
   fractions would select; the mean can lie outside it, as `n` fluctuates at
   fixed `b`;
 - `Cb_VS_CentralityClass <min>%-<max>%` and `B_VS_CentralityClass <min>%-<max>%`:
-  the probability densities `P(c_b|class)` and `P(b|class)` (1/fm);
+  the probability densities `P(c_b|class)` and `P(b|class)` (1/fm) of the
+  recorded events;
 - `B_Distribution`: `P(b)` of all inelastic events (1/fm), with the source of
   `P(b)` in the title;
 - `Cb_average_VS_Centrality`, `B_average_VS_Centrality`: the means versus
@@ -347,6 +348,8 @@ centrality: (
 - `CentralityClass <min>%-<max>%` and `CentralityClass_Fit <min>%-<max>%`: the
   data and the fit in each class;
 - `Centrality_vs_Multiplicity`: the upper percent of the class of each bin;
+- `Trigger_Efficiency`: the trigger efficiency of each bin used for the
+  classes (see [Trigger efficiency](#trigger-efficiency));
 - `fit_histo`, the data histogram, and `B_VS_Multiplicity` (TH2D, expected
   single-collision events versus `n` and `b`).
 
@@ -495,10 +498,28 @@ data over fit in each bin, the efficiency versus `n` below the fit range.
 events `N`, so in efficient classes it agrees with the class width. It warns if
 an extrapolation finds fewer events than recorded (`ε > 1`).
 
-`P(c_b|class)` and `P(b|class)` describe all collisions in a class. In
-partially efficient classes the recorded ones are biased to larger `n` within
-the class, hence slightly smaller `b` (13.51 instead of 13.60 fm in 80-90% of
-the toy above).
+`P(c_b|class)`, `P(b|class)` and their means describe the **recorded**
+events of a class. In a partially efficient class these are biased to larger
+`n`, hence smaller `b`, so each bin of the class is weighted with its trigger
+efficiency `ε_i`:
+
+```
+P(c_b | class, recorded) ∝ Σ_{bins i in class} ε_i P(n ∈ bin i | c_b)
+```
+
+`ε_i` is 1 from the fit range on (the trigger must be fully efficient
+there) and data over fit below it, made non-decreasing with `n` (weighted
+pool-adjacent-violators, with the expected counts as weights, which also
+smooths the statistical fluctuations) and limited to `[0, 1]`; it is written
+as `Trigger_Efficiency` to `FINAL.root`. Fully efficient classes are
+unchanged. On the toy above (`Efficiency` with the true `ε`), `<b>` of the
+recorded events is reproduced: 12.789 vs 12.782 fm in 70-80%, 13.521 vs
+13.513 fm in 80-90%, 14.152 vs 14.140 fm in 90-100% (without the weights,
+13.608 and 14.223 fm, those of all events). The estimated efficiency follows
+the true turn-on within about 0.02 (e.g. 0.493 vs 0.500 at `n = 6`, 0.790 vs
+0.791 at `n = 8`). The class percents and borders still refer to all events
+(`FitMinPercent`/`FitMaxPercent`), and the error propagation keeps `ε_i`
+fixed.
 
 ## Validation
 

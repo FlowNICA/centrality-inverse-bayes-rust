@@ -640,6 +640,9 @@ fn trigger_inefficiency_at_low_multiplicity() {
         let mut config = CentralityConfig::new(out.join(FIT_FILE_NAME));
         config.out_dir = out.clone();
         config.table_formats = vec![];
+        config.impact_parameter = Some(ImpactParameter::Geometric {
+            sigma_inel: SIGMA_INEL,
+        });
         (r, centrality::run(&config).unwrap())
     };
 
@@ -675,6 +678,52 @@ fn trigger_inefficiency_at_low_multiplicity() {
         assert!((100. * n_all / all.len() as f64 - width).abs() < 0.2 * width + 0.3);
     }
     assert!(c.classes[9].efficiency < 0.2 && c.classes[0].efficiency > 0.99);
+    /* <b> of the recorded events, which in partially efficient classes is
+     * below that of all events */
+    for class in &c.classes {
+        let k = class.number;
+        let mean = |events: &[(f64, f64)]| {
+            let sel: Vec<f64> = events
+                .iter()
+                .filter(|e| e.1 >= class.min_border && (k == 0 || e.1 < class.max_border))
+                .map(|e| e.0)
+                .collect();
+            sel.iter().sum::<f64>() / sel.len() as f64
+        };
+        let (b_recorded, b_all) = (mean(&recorded), mean(&all));
+        let b = class.b.unwrap().mean;
+        assert!(
+            (b - b_recorded).abs() < 0.03,
+            "{}: {b} vs recorded {b_recorded} (all {b_all})",
+            class.label()
+        );
+    }
+    let (b8, b_all8) = {
+        let class = &c.classes[8];
+        let sel = |events: &[(f64, f64)]| {
+            let v: Vec<f64> = events
+                .iter()
+                .filter(|e| e.1 >= class.min_border && e.1 < class.max_border)
+                .map(|e| e.0)
+                .collect();
+            v.iter().sum::<f64>() / v.len() as f64
+        };
+        (class.b.unwrap().mean, sel(&all))
+    };
+    assert!(b_all8 - b8 > 0.04, "{b8} vs all {b_all8}");
+    let fin = FileReader::open(dir.join("known").join("FINAL.root")).unwrap();
+    let eff = Hist1D::read_root(&fin, "Trigger_Efficiency").unwrap();
+    /* the efficiency curve 1 / (1 + exp(-(n - 6)/1.5)), bin [n, n+1) */
+    for n in [2usize, 4, 6, 8, 10] {
+        let truth = 1. / (1. + (-(n as f64 - 6.) / 1.5).exp());
+        /* statistical fluctuations, pooled by the monotonic smoothing */
+        assert!(
+            (eff.contents[n + 1] - truth).abs() < 0.05,
+            "n = {n}: {}",
+            eff.contents[n + 1]
+        );
+    }
+    assert_eq!(eff.contents[25], 1.);
 
     /* free normalization: N from the extrapolation of ExpPoly below the fit
      * range, which is not constrained (here it even finds fewer events than
