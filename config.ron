@@ -133,7 +133,9 @@
         //         below 2.0223 GeV (pion threshold): give sigma_nn (and sigma_np)
         impact_parameter: Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0),
 
-        // Histograms of b on [0, b_max] (default b_max: largest b) and of c_b on [0, 1]
+        // Histograms of b on [0, b_max] and of c_b on [0, 1]; default b_max: the largest b of
+        // P(b), where c_b reaches 1 - 1e-6 (sqrt(sigma_inel/pi) for Geometric, the last filled
+        // bin of a histogram, the edge of the overlap of the nuclear densities for Glauber)
         b_bins: 200,
         // b_max: 20.0,
         cb_bins: 500,

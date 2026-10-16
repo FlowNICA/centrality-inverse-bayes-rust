@@ -94,6 +94,9 @@ pub struct CentralityResult {
     pub source: PathBuf,
     /// Description of `P(b)`, if given.
     pub impact: Option<String>,
+    /// Largest impact parameter of `P(b)` (fm), and the upper edge of the
+    /// histograms of `b` (`b_max` of the configuration, or the former).
+    pub b_range: Option<(f64, f64)>,
     pub n_knee: f64,
     pub sigma_knee: f64,
     pub c_knee: f64,
@@ -579,6 +582,7 @@ pub fn compute(
         classes,
         source: config.fit_file.clone(),
         impact: impact.map(ImpactProfile::description),
+        b_range: impact.map(|ip| (ip.b_max(), config.b_max.unwrap_or(ip.b_max()))),
         n_knee,
         sigma_knee: model.sigma_knee(p),
         c_knee: calc.centrality(n_knee),
@@ -882,6 +886,18 @@ fn final_objects(
         .b_max
         .or(impact.map(ImpactProfile::b_max))
         .unwrap_or(1.);
+    if let (Some(ip), Some(user)) = (impact, config.b_max) {
+        let beyond = 1. - ip.cb_of_b(user);
+        if beyond > 1e-4 {
+            eprintln!(
+                "Warning: b_max = {user} fm is below the largest impact parameter of P(b), \
+                 {:.3} fm: the histograms of b miss {:.3}% of the inelastic events \
+                 (the means and widths of b are not affected)",
+                ip.b_max(),
+                100. * beyond
+            );
+        }
+    }
     let b_edges: Vec<f64> = (0..=config.b_bins)
         .map(|i| b_max * i as f64 / config.b_bins as f64)
         .collect();

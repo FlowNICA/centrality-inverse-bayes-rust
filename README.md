@@ -382,6 +382,22 @@ centrality: (
   - `Glauber(nucleus_a: "Au", nucleus_b: "Au", sigma_nn: 30.0)`: the optical
     Glauber model from the nuclear density profiles, see
     [Impact parameter from the nuclear density](#impact-parameter-from-the-nuclear-density).
+- The largest impact parameter `b_max` comes from `P(b)`: `√(σ_inel/π)` for
+  `Geometric`; for the tabulated ones (`Fermi`, `Glauber`, `Histogram`,
+  `Histogram2D`, `Tree`) the first `b` where `c_b` reaches `1 - 10⁻⁶`, i.e.
+  where `P(b)` ends, not the end of the table: for `Histogram`/`Histogram2D`
+  the upper edge of the last filled bin of `b` (empty bins up to the end of the
+  axis are ignored), for `Tree` the largest `b`, for `Fermi` a few widths above
+  `b0`, for `Glauber` the edge of the overlap of the nuclear densities (19.1 fm
+  for Au+Au at 30 mb, 19.4 fm for Pb+Pb at 64 mb, 11.9 fm for p+Pb at 70 mb;
+  99.9% of the events are below 16.7, 17.4 and 10.0 fm). Its tail of `10⁻⁶`
+  depends on the cut of the densities at `max_r` of `nuclei.ron`, where
+  oxy-glauber stops sampling too. All `b` are within `[0, b_max]`: the means,
+  the sharp-cut ranges (`BMax` of the most peripheral class is `b_max`), and
+  the histograms of `b`, whose range is `[0, b_max]` unless `b_max` is given
+  in the configuration; a `b_max` below that of `P(b)` cuts the histograms (a
+  warning gives the fraction of events lost; the means are not affected).
+  The table prints `b_max`.
 - `n_error_samples`: the fit uncertainties are propagated by drawing parameter
   sets from a multivariate normal distribution with the fit covariance (fixed
   parameters stay fixed) and recomputing everything; the standard deviations

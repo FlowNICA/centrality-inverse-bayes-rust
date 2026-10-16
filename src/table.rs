@@ -184,6 +184,12 @@ pub fn plain_table(result: &CentralityResult) -> String {
     }
     if let Some(ip) = &result.impact {
         let _ = writeln!(s, "impact parameter: {ip}");
+        if let Some((b_max, hist_max)) = result.b_range {
+            let _ = writeln!(
+                s,
+                "largest impact parameter of P(b): {b_max:.3} fm (histograms of b up to {hist_max:.3} fm)"
+            );
+        }
     }
     if result.n_error_samples > 0 {
         let _ = writeln!(

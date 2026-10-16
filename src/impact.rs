@@ -13,6 +13,10 @@ use crate::numeric::{bisect, composite_gauss_legendre};
 const FERMI_POINTS: usize = 20_000;
 /// Bins of the histogram built from per-event values of `b`.
 const TREE_BINS: usize = 4000;
+/// A tabulated `c_b(b)` ends at the first `b` with `c_b >= 1 - CB_END`: the
+/// largest impact parameter `b_max`. The neglected part of `P(b)` beyond it
+/// is at most `CB_END`.
+pub const CB_END: f64 = 1e-6;
 
 /// `c_b(b)` and its inverse.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +34,26 @@ pub enum ImpactProfile {
 }
 
 impl ImpactProfile {
+    /// A tabulated profile through the points `(b[i], cb[i])` (both
+    /// ascending, `cb` from 0 towards 1), ending at the first point with
+    /// `c_b >= 1 - CB_END`, which is set to 1: from there on `P(b)` is
+    /// negligible, so that point is `b_max`. Without it, the end of the table
+    /// (the range of a histogram, the cut-off of a density) would be taken as
+    /// the largest impact parameter.
+    pub fn table(mut b: Vec<f64>, mut cb: Vec<f64>, sigma_inel: f64, description: String) -> Self {
+        if let Some(end) = cb.iter().position(|&c| c >= 1. - CB_END) {
+            b.truncate(end + 1);
+            cb.truncate(end + 1);
+            cb[end] = 1.;
+        }
+        ImpactProfile::Table {
+            b,
+            cb,
+            sigma_inel,
+            description,
+        }
+    }
+
     pub fn from_config(ip: &ImpactParameter) -> Result<Self> {
         match ip {
             ImpactParameter::Geometric { sigma_inel } => Ok(ImpactProfile::Geometric {
@@ -113,14 +137,14 @@ impl ImpactProfile {
             cum.push(total);
         }
         let cb = cum.iter().map(|c| c / total).collect();
-        ImpactProfile::Table {
+        Self::table(
             b,
             cb,
-            sigma_inel: total,
-            description: format!(
+            total,
+            format!(
                 "Fermi P(b), b0 = {b0:.4} fm, width = {width} fm, sigma_inel = {total:.2} fm^2"
             ),
-        }
+        )
     }
 
     /// From a histogram of `b`: `c_b` is its cumulative distribution,
@@ -154,12 +178,7 @@ impl ImpactProfile {
             b.insert(0, 0.);
             cb.insert(0, 0.);
         }
-        Ok(ImpactProfile::Table {
-            b,
-            cb,
-            sigma_inel: f64::NAN,
-            description,
-        })
+        Ok(Self::table(b, cb, f64::NAN, description))
     }
 
     /// From per-event values of `b`, through a fine histogram.
@@ -194,13 +213,10 @@ impl ImpactProfile {
         }
     }
 
-    /// Largest impact parameter: where `c_b` reaches 1 (`1 - 1e-6` for the
-    /// Fermi tail).
+    /// Largest impact parameter, where `c_b` reaches 1: `√(σ_inel/π)` for the
+    /// geometric `P(b)`, the end of a table (see [`ImpactProfile::table`]).
     pub fn b_max(&self) -> f64 {
-        match self {
-            ImpactProfile::Geometric { .. } => self.b_of_cb(1.),
-            ImpactProfile::Table { .. } => self.b_of_cb(1. - 1e-6),
-        }
+        self.b_of_cb(1.)
     }
 
     /// Inelastic cross section in fm², if known.
@@ -300,5 +316,43 @@ mod tests {
         }
         assert!((p.b_of_cb(0.5) - b_max * 0.5f64.sqrt()).abs() < 0.01);
         assert!(ImpactProfile::from_values(&[], "e".into()).is_err());
+    }
+
+    #[test]
+    fn b_max_is_where_p_of_b_ends() {
+        /* a histogram with empty bins at the end of its axis: b_max is the
+         * upper edge of the last filled bin, not the end of the axis */
+        let edges: Vec<f64> = (0..=30).map(f64::from).collect();
+        let mut counts = vec![0.; 30];
+        for (i, c) in counts.iter_mut().enumerate().take(15) {
+            *c = 2. * i as f64 + 1.;
+        }
+        let p = ImpactProfile::from_counts(&edges, &counts, "test".into()).unwrap();
+        assert_eq!(p.b_max(), 15.);
+        assert_eq!(p.b_of_cb(1.), 15.);
+        assert_eq!(p.cb_of_b(20.), 1.);
+        /* Fermi: a few widths above b0, not at the end of the tabulation */
+        let (b0, width) = (10.1, 0.4);
+        let p = ImpactProfile::fermi(b0, width);
+        let b_max = p.b_max();
+        assert!(
+            b_max > b0 + 2. * width && b_max < b0 + 20. * width,
+            "{b_max}"
+        );
+        assert!(1. - p.cb_of_b(b_max - 0.01) < 2. * CB_END);
+        assert_eq!(p.b_of_cb(1.), b_max);
+        /* optical Glauber: beyond twice the radius of Au, below the cut-off
+         * of the densities (2 max_r = 20 fm) */
+        let g = crate::optical::OpticalGlauber::new("Au", "Au", Some(30.), None, None, None)
+            .unwrap()
+            .profile();
+        let b_max = g.b_max();
+        assert!(b_max > 2. * 6.38 + 2. && b_max < 19.5, "{b_max}");
+        assert_eq!(g.b_of_cb(1.), b_max);
+        /* black hard spheres: exactly R_A + R_B */
+        let hs = crate::optical::OpticalGlauber::new("IHS", "Xe124HS", Some(1e6), None, None, None)
+            .unwrap()
+            .profile();
+        assert!((hs.b_max() - (5.66 + 5.431)).abs() < 0.05, "{}", hs.b_max());
     }
 }

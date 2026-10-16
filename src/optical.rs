@@ -891,11 +891,11 @@ impl OpticalGlauber {
         let (p_inel, db) = self.inelastic_probability();
         let (cb, sigma_inel) = Self::centralities(&p_inel, db);
         let b: Vec<f64> = (0..p_inel.len()).map(|k| k as f64 * db).collect();
-        ImpactProfile::Table {
+        ImpactProfile::table(
             b,
             cb,
             sigma_inel,
-            description: format!(
+            format!(
                 "optical Glauber P(b) for {}+{}, sigma_NN = {:.3} mb ({}), sigma_inel = {:.2} fm^2 ({:.4} b)",
                 self.nucleus_a.name,
                 self.nucleus_b.name,
@@ -904,7 +904,7 @@ impl OpticalGlauber {
                 sigma_inel,
                 sigma_inel / 100.
             ),
-        }
+        )
     }
 }
 

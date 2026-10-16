@@ -525,6 +525,21 @@ fn impact_parameter_from_nuclear_density_profiles() {
     });
     let description = glauber.impact.clone().unwrap();
     assert!(description.contains("optical Glauber"), "{description}");
+    /* every b within [0, b_max], b_max from the nuclear densities (well
+     * below the cut-off of the densities, 2 max_r = 20 fm for Au) */
+    let (b_max, hist_max) = glauber.b_range.unwrap();
+    assert_eq!(b_max, hist_max);
+    assert!(b_max > 15. && b_max < 19.5, "{b_max}");
+    for class in &glauber.classes {
+        let b = class.b.unwrap();
+        assert!(
+            b.min >= 0. && b.max <= b_max && b.min <= b.max,
+            "{}: {b:?}",
+            class.label()
+        );
+        assert!(b.mean > 0. && b.mean < b_max, "{}: {b:?}", class.label());
+    }
+    assert_eq!(glauber.classes[9].b.unwrap().max, b_max);
 
     /* the same total cross section with a sharp geometric edge */
     let sigma_inel = centrality_inverse_bayes_rust::optical::OpticalGlauber::new(
@@ -553,6 +568,10 @@ fn impact_parameter_from_nuclear_density_profiles() {
 
     let fin = FileReader::open(final_path).unwrap();
     let h = Hist1D::read_root(&fin, "B_Distribution").unwrap();
+    /* the file of the last run, with the geometric P(b): b_max = √(σ/π) */
+    let geometric_b_max = (sigma_inel / std::f64::consts::PI).sqrt();
+    assert_eq!(geometric.b_range.unwrap().0, geometric_b_max);
+    assert!((h.xaxis.xmin, h.xaxis.xmax) == (0., geometric_b_max));
     let width = (h.xaxis.xmax - h.xaxis.xmin) / h.xaxis.nbins as f64;
     let integral: f64 = h.contents.iter().sum::<f64>() * width;
     assert!((integral - 1.).abs() < 1e-3, "{integral}");
