@@ -19,6 +19,36 @@ const CB_GRAPH_POINTS: usize = 501;
 /// Bins in `c_b` of `Cb_VS_Multiplicity`.
 const CB_2D_BINS: usize = 100;
 
+/// Name of the tree with the best fit, one entry with a branch per parameter.
+pub const BEST_RESULT_TREE: &str = "BestResult";
+
+/// The best fit as in centrality-glauber-rust: one entry, with a branch per
+/// parameter (its value), `<name>_error` (its error, 0 if fixed), `chi2`
+/// (the fit statistic per degree of freedom, `chi2/ndf` or
+/// `-2ln(L/Lsat)/ndf`) and `ndf`.
+pub fn best_result_tree(
+    names: &[String],
+    values: &[f64],
+    errors: &[f64],
+    statistic: f64,
+    ndf: usize,
+) -> Tree {
+    let mut branches: Vec<Branch> = names
+        .iter()
+        .zip(values)
+        .map(|(name, v)| Branch::f64(name.as_str(), vec![*v]))
+        .collect();
+    branches.extend(
+        names
+            .iter()
+            .zip(errors)
+            .map(|(name, e)| Branch::f64(format!("{name}_error"), vec![*e])),
+    );
+    branches.push(Branch::f64("chi2", vec![statistic / ndf.max(1) as f64]));
+    branches.push(Branch::i32("ndf", vec![ndf as i32]));
+    Tree::new(BEST_RESULT_TREE, branches)
+}
+
 /// Makes ROOT recompute the statistics from the bin contents
 /// (`TH1::GetStats` does so if `fTsumw == 0` and `fEntries > 0`).
 pub fn reset_stats(h: &mut Hist1D) {
@@ -289,6 +319,13 @@ pub fn write_fit(
             Branch::i32("n_calls", vec![result.n_calls as i32]),
         ],
     );
+    let best_result = best_result_tree(
+        &result.names,
+        &result.values,
+        &result.errors,
+        result.statistic,
+        result.ndf,
+    );
     let parameters = Tree::new(
         "Parameters",
         vec![
@@ -330,6 +367,7 @@ pub fn write_fit(
         .add(&centrality_graph)
         .add(&cb_vs_mult)
         .put(fit_result)
+        .put(best_result)
         .put(parameters)
         .put(covariance)
         .write(Compression::default())?;

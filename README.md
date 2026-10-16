@@ -372,6 +372,10 @@ The fit writes `<out_dir>/bayes_fit.root` with
   `efficiency` (`data_total / norm`), `efficiency_below_fit` (data over fit
   below the fit range), `fit_min`, `fit_max`, `n_knee`, `sigma_knee`, `c_knee`,
   `valid`, `edm`, `n_calls`, the data file and histogram name;
+- tree `BestResult`, the best fit as in centrality-glauber-rust: one entry
+  with a branch per parameter (e.g. `theta`, `n_knee`, `a1`, ...) holding its
+  value, `<name>_error` with its error (0 if fixed), `chi2` (the fit statistic
+  per degree of freedom, `-2ln(L/Lsat)/ndf` or `chi2/ndf`) and `ndf`;
 - tree `Parameters`: `name`, `value`, `error`, `fixed`, one entry per parameter;
 - tree `Covariance`: `row`, `col`, `value` of the full covariance matrix.
 
@@ -445,6 +449,8 @@ centrality: (
 
 `FINAL.root` in `out_dir` contains:
 
+- tree `BestResult`: the best fit of the fit file (see [`fit`](#fit)), so
+  that the output carries the fit it was made with;
 - tree `Result`, one entry per class: `Ncc`, `MinPercent`, `MaxPercent`,
   `MinBorder`, `MaxBorder` (`Int_t` if all are integers, as `printFinal.C`
   expects, otherwise `Double_t`), `FitMinPercent`, `FitMaxPercent`,

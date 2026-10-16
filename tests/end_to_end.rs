@@ -166,6 +166,24 @@ fn recovers_parameters_and_impact_parameter() {
         assert!(e.b_mean > 0. && e.b_mean < 0.1);
     }
 
+    /* the best fit, one branch per parameter, in the fit and output files */
+    for path in [dir.join(FIT_FILE_NAME), config.final_path()] {
+        let file = FileReader::open(&path).unwrap();
+        let best = TreeReader::open(&file, "BestResult").unwrap();
+        for ((name, v), e) in result.names.iter().zip(&result.values).zip(&result.errors) {
+            assert_eq!(numbers(&best, &file, name).unwrap(), [*v]);
+            assert_eq!(
+                numbers(&best, &file, &format!("{name}_error")).unwrap(),
+                [*e]
+            );
+        }
+        assert_eq!(
+            numbers(&best, &file, "chi2").unwrap(),
+            [result.reduced_statistic()]
+        );
+        assert_eq!(numbers(&best, &file, "ndf").unwrap(), [result.ndf as f64]);
+    }
+
     /* output file and tables */
     let fin = FileReader::open(config.final_path()).unwrap();
     let tree = TreeReader::open(&fin, "Result").unwrap();

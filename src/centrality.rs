@@ -26,8 +26,8 @@ use crate::impact::ImpactProfile;
 use crate::model::{Model, NodeKernel, Quadrature};
 use crate::numeric::cholesky;
 use crate::output::{
-    StoredFit, graph, histogram_2d, histogram_from_edges, histogram_like, joint_counts, read_fit,
-    set_2d, uniform_histogram,
+    StoredFit, best_result_tree, graph, histogram_2d, histogram_from_edges, histogram_like,
+    joint_counts, read_fit, set_2d, uniform_histogram,
 };
 
 /// Mean, RMS and the range selected by a sharp cut at the class percents.
@@ -380,6 +380,8 @@ pub fn run(config: &CentralityConfig) -> Result<CentralityResult> {
 #[derive(Default)]
 pub struct FinalObjects {
     pub tree: Option<Tree>,
+    /// The best fit of the fit file (`BestResult`).
+    pub best_result: Option<Tree>,
     pub hists: Vec<Hist1D>,
     pub hists_2d: Vec<Hist2D>,
     pub graphs: Vec<Graph>,
@@ -389,6 +391,9 @@ impl FinalObjects {
     pub fn write(self, path: &std::path::Path) -> Result<()> {
         let mut writer = FileWriter::create(path);
         if let Some(tree) = self.tree {
+            writer = writer.put(tree);
+        }
+        if let Some(tree) = self.best_result {
             writer = writer.put(tree);
         }
         for h in &self.hists {
@@ -836,6 +841,13 @@ fn final_objects(
         }
     }
     objects.tree = Some(Tree::new("Result", branches));
+    objects.best_result = Some(best_result_tree(
+        &fit.names,
+        &fit.values,
+        &fit.errors,
+        fit.statistic,
+        fit.ndf,
+    ));
 
     /* averages versus centrality */
     let mut percent_edges: Vec<f64> = classes.iter().map(|c| c.min_percent).collect();
