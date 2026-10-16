@@ -39,6 +39,11 @@
         //                of ALL inelastic events (x_axis/y_axis: which axis holds "n" and which
         //                "b"); b(c_b) from P(b), the projection of the histogram on b
         //                parameters: theta, mean_scale
+        //   Tree(file: "~/model.root", tree: "events", b_branch: "B", n_branch: "Mult")
+        //              - mean_scale * <n>(c_b) from b and n of each event of a tree of ALL
+        //                inelastic events, in b_bins (default 100) bins of equal numbers of
+        //                events; c_b of an event from its rank in b
+        //                parameters: theta, mean_scale
         mean: ExpPoly(3),
 
         // Variance of n versus c_b:
@@ -47,6 +52,8 @@
         //   Histogram(file: "~/model.root", hist: "h2_n_b", x_axis: "b", y_axis: "n")
         //                - variance_scale * Var(n)(b), from a 2-D histogram of all inelastic
         //                  events as for the mean; the parameter variance_scale replaces theta
+        //   Tree(file: "~/model.root", tree: "events", b_branch: "B", n_branch: "Mult")
+        //                - variance_scale * Var(n)(c_b) from a tree, as for the mean
         variance: Proportional,
 
         // Pile-up: with probability p (fit parameter "p"), a recorded event is the

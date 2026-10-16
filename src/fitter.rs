@@ -193,7 +193,7 @@ impl Fitter {
         if self.config.normalization == Normalization::Free
             && !matches!(
                 self.model.mean,
-                MeanModel::Glauber { .. } | MeanModel::Histogram { .. }
+                MeanModel::Glauber { .. } | MeanModel::Histogram { .. } | MeanModel::Tree { .. }
             )
         {
             eprintln!(
@@ -439,7 +439,9 @@ impl Fitter {
                             let r = 0.004 * (0.6f64 / 0.004).powf(t);
                             r * r * n_knee
                         }
-                        VarianceModel::Histogram { .. } => 0.05 * (20f64 / 0.05).powf(t),
+                        VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => {
+                            0.05 * (20f64 / 0.05).powf(t)
+                        }
                     }
                 })
                 .collect()
@@ -499,7 +501,7 @@ impl Fitter {
                 &points,
                 self.model.glauber_table().expect("Glauber table"),
             )),
-            MeanModel::Histogram { .. } => {
+            MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
                 let profile = self.model.mean_profile().expect("histogram profile");
                 Ok(vec![prefit_scale(&points, |c| profile.mean(c))])
             }
@@ -654,7 +656,9 @@ fn scale_mean(model: &Model, p: &mut [f64], s: f64) {
             p[1] *= s;
             p[2] *= s;
         }
-        MeanModel::Glauber { .. } | MeanModel::Histogram { .. } => p[1] *= s,
+        MeanModel::Glauber { .. } | MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
+            p[1] *= s
+        }
     }
 }
 
@@ -700,7 +704,10 @@ fn param_specs(
             let positive = match model.mean {
                 _ if is_pile_up => true,
                 MeanModel::ExpPoly(_) => i <= 1,
-                MeanModel::Indra | MeanModel::Glauber { .. } | MeanModel::Histogram { .. } => true,
+                MeanModel::Indra
+                | MeanModel::Glauber { .. }
+                | MeanModel::Histogram { .. }
+                | MeanModel::Tree { .. } => true,
             };
             let default_step = match (&model.mean, i) {
                 _ if is_pile_up => 0.5 * v.abs().max(1e-4),

@@ -376,10 +376,12 @@ impl FitConfig {
         {
             *file = expand_home(file);
         }
-        if let MeanModel::Histogram { file, .. } = &mut config.mean {
+        if let MeanModel::Histogram { file, .. } | MeanModel::Tree { file, .. } = &mut config.mean {
             *file = expand_home(file);
         }
-        if let VarianceModel::Histogram { file, .. } = &mut config.variance {
+        if let VarianceModel::Histogram { file, .. } | VarianceModel::Tree { file, .. } =
+            &mut config.variance
+        {
             *file = expand_home(file);
         }
         config.validate()?;
@@ -409,11 +411,11 @@ impl FitConfig {
             spec.validate()
                 .map_err(|e| Error::Config(format!("mean: {e}")))?;
         }
-        if let Some(spec) = self.mean.histogram_spec() {
+        if let Some(spec) = self.mean.profile_spec() {
             spec.validate()
                 .map_err(|e| Error::Config(format!("mean: {e}")))?;
         }
-        if let Some(spec) = self.variance.histogram_spec() {
+        if let Some(spec) = self.variance.profile_spec() {
             spec.validate()
                 .map_err(|e| Error::Config(format!("variance: {e}")))?;
         }

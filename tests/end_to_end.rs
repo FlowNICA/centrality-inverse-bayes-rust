@@ -877,3 +877,110 @@ fn mean_and_variance_from_a_histogram_of_n_versus_b() {
         .to_string();
     assert!(err.contains("outside the axis of b"), "{err}");
 }
+
+#[test]
+fn mean_and_variance_from_a_tree_of_n_and_b() {
+    let dir = test_dir("tree_profile");
+    let events = toy_events(300_000, 21, None);
+    let data = dir.join("toy.root");
+    write_toy(&data, &events, 500, 500.);
+    /* the model: b and n of each event of an independent toy (tree "events",
+     * branches "B" and "Mult") */
+    let model = dir.join("model.root");
+    write_toy(&model, &toy_events(1_000_000, 22, None), 500, 500.);
+
+    let tree = |extra: &str| {
+        format!(
+            r#"Tree(file: "{}", tree: "events", b_branch: "B", n_branch: "Mult"{extra})"#,
+            model.display()
+        )
+    };
+    let config = dir.join("config.ron");
+    std::fs::write(
+        &config,
+        format!(
+            r#"(
+                fit: (
+                    data_file: "{data}",
+                    data_hist: "hMult",
+                    out_dir: "{dir}",
+                    fit_min: 10,
+                    normalization: Free,
+                    mean: {mean},
+                    variance: {mean},
+                ),
+                centrality: (
+                    fit_file: "{dir}/bayes_fit.root",
+                    out_dir: "{dir}",
+                    classes: [0, 10, 20, 40, 60, 80, 100],
+                    impact_parameter: Tree(file: "{model}", tree: "events", branch: "B"),
+                ),
+            )"#,
+            data = data.display(),
+            model = model.display(),
+            dir = dir.display(),
+            mean = tree(""),
+        ),
+    )
+    .unwrap();
+    let fit = FitConfig::from_ron_file(&config).unwrap();
+    let r = centrality_inverse_bayes_rust::run(fit.clone()).unwrap();
+    assert!(r.valid);
+    assert_eq!(r.names, ["variance_scale", "mean_scale"]);
+    /* the model is the truth: both scales are 1 */
+    for ((name, v), e) in r.names.iter().zip(&r.values).zip(&r.errors) {
+        assert!(
+            *e > 0. && *e < 0.05 && (v - 1.).abs() < 3. * e,
+            "{name} = {v} +- {e}"
+        );
+    }
+    assert!(r.reduced_statistic() < 1.5, "{}", r.reduced_statistic());
+    assert!(
+        (r.norm / events.len() as f64 - 1.).abs() < 0.02,
+        "{}",
+        r.norm
+    );
+
+    /* the fit file restores the model; the classes reproduce the true <b> */
+    let stored = read_fit(&dir.join(FIT_FILE_NAME)).unwrap();
+    assert_eq!(stored.model.mean, r.model.mean);
+    assert_eq!(stored.model.variance, r.model.variance);
+    let c = CentralityConfig::from_ron_file(&config).unwrap();
+    let classes = centrality::run(&c).unwrap();
+    for (k, class) in classes.classes.iter().enumerate() {
+        let b = class.b.unwrap().mean;
+        let truth = true_mean_b(&events, class.min_border, class.max_border, k == 0);
+        assert!(
+            (b - truth).abs() < 0.1,
+            "class {}: {b} vs {truth}",
+            class.label()
+        );
+    }
+
+    /* fewer bins of b give nearly the same fit */
+    let mut coarse = fit.clone();
+    coarse.out_dir = dir.join("coarse");
+    coarse.mean = tree(", b_bins: 30").parse().unwrap();
+    let r30 = centrality_inverse_bayes_rust::run(coarse).unwrap();
+    assert!(
+        (r30.values[1] - r.values[1]).abs() < 0.01,
+        "{:?}",
+        r30.values
+    );
+
+    /* wrong inputs are reported */
+    let mut bad = fit.clone();
+    bad.mean = format!(
+        r#"Tree(file: "{}", tree: "events", b_branch: "B", n_branch: "Nope")"#,
+        model.display()
+    )
+    .parse()
+    .unwrap();
+    assert!(centrality_inverse_bayes_rust::run(bad).is_err());
+    let mut bad = fit;
+    bad.mean = tree(", b_bins: 1000000").parse().unwrap();
+    let err = centrality_inverse_bayes_rust::run(bad)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("too few"), "{err}");
+}

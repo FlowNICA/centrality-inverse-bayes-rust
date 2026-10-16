@@ -140,6 +140,45 @@ truth. The kernel shape stays a Gamma (or Gauss) distribution with these
 moments: if the distribution of `n` at fixed `b` of the model is not of this
 shape, the fit is poor even with both scales at 1.
 
+### Mean and variance from a tree of `b` and `n`
+
+The `Tree` mean and variance take the same dependence from the values of `b`
+(fm) and `n` of each event in a tree of **all inelastic events** (e.g. an
+MC-Glauber or transport model tree), with the same parameters `mean_scale`
+and `variance_scale` and the same meaning:
+
+```ron
+mean: Tree(file: "~/model.root", tree: "events", b_branch: "B", n_branch: "Mult"),
+variance: Tree(file: "~/model.root", tree: "events", b_branch: "B", n_branch: "Mult", b_bins: 100),
+```
+
+As the events need no binning, the moments are built versus `c_b` directly:
+
+- the `c_b` of an event is the fraction of events of the tree with a smaller
+  `b`, and `P(b)` is that of all events of the tree (as for
+  `impact_parameter: Tree`, with which `define-centrality` can use the same
+  `P(b)`);
+- the events are grouped into `b_bins` bins (default 100, at least 10
+  events each) with equal numbers of events, i.e. of equal width in `c_b`, so
+  all bins have the same statistics;
+- the mean of `n` of each bin is computed from the values of `n` (no
+  binning, so no `(bin width)²/12` and no lost under/overflow, unlike a
+  histogram), placed at the bin center in `c_b`, interpolated linearly, and
+  extrapolated linearly to `c_b = 0` and 1, i.e. by half a bin: `n̄` falls
+  fastest at `c_b = 0`, where it sets the knee, and holding it constant there
+  would underestimate it;
+- the variance of a bin is that of `n` around this interpolated mean at the
+  `c_b` of each event, so the change of the mean across the bin is not
+  counted as a fluctuation.
+
+On a toy (a tree of 10⁶ events with a known `n̄(c_b)` and Gamma kernel,
+3·10⁵ events fitted with `normalization: Free`) the scales are 1 within
+their errors and stable for `b_bins` from 30 to 1000 (`variance_scale` 1.04,
+0.985, 0.983, 0.981 for 30, 100, 300, 1000 bins, `± 0.031`; `mean_scale`
+1.0003-1.0016, `± 0.0013`; `N` within 1.2%). With 10 bins the mean is too
+coarse (`variance_scale = 1.49`, and a worse fit). `<b>` of the classes is
+within 0.1 fm of the truth.
+
 The parameter vector is `theta` (or `variance_scale`) followed by the mean
 parameters. `n_knee = n̄(0)`
 is the knee of the distribution, `σ(0) = √(θ n_knee)` the width of the

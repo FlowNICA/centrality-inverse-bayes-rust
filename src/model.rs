@@ -33,7 +33,7 @@ use serde::Deserialize;
 use crate::error::Error;
 use crate::numeric::{composite_gauss_legendre, gamma_pq, ln_gamma, normal_cdf, normal_sf};
 use crate::optical::{GlauberMean, GlauberSpec};
-use crate::profile::{Axis, CbProfile, HistogramSpec};
+use crate::profile::{Axis, CbProfile, HistogramSpec, ProfileSpec, TreeSpec};
 
 /// Probabilities below this are treated as zero when walking into the tails.
 const TAIL_CUT: f64 = 1e-22;
@@ -93,6 +93,19 @@ pub enum MeanModel {
         x_axis: Axis,
         y_axis: Axis,
     },
+    /// `n̄ = mean_scale · ⟨n⟩(b)`, as `Histogram` but from the values of `b`
+    /// and `n` of each event in the branches `b_branch` and `n_branch` of a
+    /// tree of all inelastic events (e.g. of a model), in `b_bins` bins of
+    /// `b` with equal numbers of events (default 100); `P(b)` is that of
+    /// the tree.
+    Tree {
+        file: PathBuf,
+        tree: String,
+        b_branch: String,
+        n_branch: String,
+        #[serde(default)]
+        b_bins: Option<usize>,
+    },
 }
 
 impl MeanModel {
@@ -106,8 +119,37 @@ impl MeanModel {
                 .map(String::from)
                 .to_vec(),
             MeanModel::Glauber { .. } => ["mu", "f"].map(String::from).to_vec(),
-            MeanModel::Histogram { .. } => vec!["mean_scale".to_string()],
+            MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
+                vec!["mean_scale".to_string()]
+            }
         }
+    }
+
+    /// The tree of the `Tree` model.
+    pub fn tree_spec(&self) -> Option<TreeSpec> {
+        match self {
+            Self::Tree {
+                file,
+                tree,
+                b_branch,
+                n_branch,
+                b_bins,
+            } => Some(TreeSpec {
+                file: file.clone(),
+                tree: tree.clone(),
+                b_branch: b_branch.clone(),
+                n_branch: n_branch.clone(),
+                b_bins: *b_bins,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The histogram or tree of the `Histogram` or `Tree` model.
+    pub fn profile_spec(&self) -> Option<ProfileSpec> {
+        self.histogram_spec()
+            .map(ProfileSpec::Histogram)
+            .or(self.tree_spec().map(ProfileSpec::Tree))
     }
 
     /// The 2-D histogram of the `Histogram` mean.
@@ -171,15 +213,52 @@ pub enum VarianceModel {
         x_axis: Axis,
         y_axis: Axis,
     },
+    /// `σ² = variance_scale · Var(n)(b)` from the values of `b` and `n` of
+    /// each event in a tree, as for the `Tree` mean.
+    Tree {
+        file: PathBuf,
+        tree: String,
+        b_branch: String,
+        n_branch: String,
+        #[serde(default)]
+        b_bins: Option<usize>,
+    },
 }
 
 impl VarianceModel {
     /// Name of the first parameter, which scales the variance.
     pub fn param_name(&self) -> &'static str {
         match self {
-            VarianceModel::Histogram { .. } => "variance_scale",
+            VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => "variance_scale",
             _ => "theta",
         }
+    }
+
+    /// The tree of the `Tree` model.
+    pub fn tree_spec(&self) -> Option<TreeSpec> {
+        match self {
+            Self::Tree {
+                file,
+                tree,
+                b_branch,
+                n_branch,
+                b_bins,
+            } => Some(TreeSpec {
+                file: file.clone(),
+                tree: tree.clone(),
+                b_branch: b_branch.clone(),
+                n_branch: n_branch.clone(),
+                b_bins: *b_bins,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The histogram or tree of the `Histogram` or `Tree` model.
+    pub fn profile_spec(&self) -> Option<ProfileSpec> {
+        self.histogram_spec()
+            .map(ProfileSpec::Histogram)
+            .or(self.tree_spec().map(ProfileSpec::Tree))
     }
 
     /// The 2-D histogram of the `Histogram` variance.
@@ -246,9 +325,9 @@ impl Model {
             None => None,
         };
         let profile =
-            |spec: Option<HistogramSpec>| spec.map(|spec| spec.build().map(Arc::new)).transpose();
-        let mean_profile = profile(mean.histogram_spec())?;
-        let variance_profile = profile(variance.histogram_spec())?;
+            |spec: Option<ProfileSpec>| spec.map(|spec| spec.build().map(Arc::new)).transpose();
+        let mean_profile = profile(mean.profile_spec())?;
+        let variance_profile = profile(variance.profile_spec())?;
         Ok(Model {
             kernel,
             mean,
@@ -330,7 +409,7 @@ impl Model {
                     .at(cb);
                 p[1] * (p[2] * npart + (1. - p[2]) * ncoll)
             }
-            MeanModel::Histogram { .. } => {
+            MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
                 p[1] * self
                     .mean_profile
                     .as_ref()
@@ -350,7 +429,7 @@ impl Model {
         match self.variance {
             VarianceModel::Proportional => p[0] * mean,
             VarianceModel::Constant => p[0] * self.n_knee(p),
-            VarianceModel::Histogram { .. } => {
+            VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => {
                 p[0] * self
                     .variance_profile
                     .as_ref()
@@ -386,7 +465,7 @@ impl Model {
                 p[1] >= 0. && p[2] >= 0. && p[1] + p[2] > 0. && p[3] > 0. && p[4] > 0.
             }
             MeanModel::Glauber { .. } => p[1] > 0. && (0. ..=1.).contains(&p[2]),
-            MeanModel::Histogram { .. } => p[1] > 0.,
+            MeanModel::Histogram { .. } | MeanModel::Tree { .. } => p[1] > 0.,
         }
     }
 
@@ -652,6 +731,10 @@ impl fmt::Display for VarianceModel {
                 let spec = self.histogram_spec().expect("Histogram variance");
                 write!(f, "Histogram({})", spec.ron_fields())
             }
+            VarianceModel::Tree { .. } => {
+                let spec = self.tree_spec().expect("Tree variance");
+                write!(f, "Tree({})", spec.ron_fields())
+            }
         }
     }
 }
@@ -677,6 +760,10 @@ impl fmt::Display for MeanModel {
                 let spec = self.histogram_spec().expect("Histogram mean");
                 write!(f, "Histogram({})", spec.ron_fields())
             }
+            MeanModel::Tree { .. } => {
+                let spec = self.tree_spec().expect("Tree mean");
+                write!(f, "Tree({})", spec.ron_fields())
+            }
         }
     }
 }
@@ -700,7 +787,10 @@ impl FromStr for Kernel {
 impl FromStr for VarianceModel {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        ron::from_str(s.trim())
+        /* as in the configuration, options are written without Some(...) */
+        ron::Options::default()
+            .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
+            .from_str(s.trim())
             .map_err(|e| Error::Input(format!("unknown variance model '{s}': {e}")))
     }
 }
@@ -1023,6 +1113,19 @@ mod tests {
             assert!(!with.is_valid(&q));
         }
         assert!("ExpPoly(x)".parse::<MeanModel>().is_err());
+        /* the Tree mean and variance round-trip through their RON form */
+        let text =
+            r#"Tree(file: "m.root", tree: "t", b_branch: "B", n_branch: "Mult", b_bins: 40)"#;
+        let mean: MeanModel = text.parse().unwrap();
+        assert_eq!(mean.to_string().parse::<MeanModel>().unwrap(), mean);
+        assert_eq!(mean.param_names(), ["mean_scale"]);
+        assert_eq!(mean.tree_spec().unwrap().b_bins, Some(40));
+        let variance: VarianceModel = text.parse().unwrap();
+        assert_eq!(
+            variance.to_string().parse::<VarianceModel>().unwrap(),
+            variance
+        );
+        assert_eq!(variance.param_name(), "variance_scale");
         /* the Glauber mean round-trips through its RON form */
         let glauber = MeanModel::Glauber {
             nucleus_a: "Pb".into(),
