@@ -71,6 +71,61 @@ pub fn run_with_progress(
     })
 }
 
+/// Prints the fitted parameters, the fit quality, the normalization and the
+/// trigger efficiency to stdout, and warnings to stderr.
+pub fn print_fit_summary(r: &FitResult, method: FitMethod) {
+    println!();
+    println!(
+        "Results of the fit ({}), {}:",
+        r.model.describe(),
+        if r.valid {
+            "valid minimum"
+        } else {
+            "INVALID minimum"
+        }
+    );
+    for ((name, v), e) in r.names.iter().zip(&r.values).zip(&r.errors) {
+        println!("  {name:>8} = {v:>14.6} +- {e:.6}");
+    }
+    println!(
+        "  {} = {:.2} / {} = {:.4}",
+        method.statistic_name(),
+        r.statistic,
+        r.ndf,
+        r.reduced_statistic()
+    );
+    println!(
+        "  N = {:.1} (data entries {:.0}), n_knee = {:.4}, sigma(n_knee) = {:.4}, c_knee = {:.4}%",
+        r.norm,
+        r.data_total,
+        r.n_knee,
+        r.sigma_knee,
+        100. * r.c_knee
+    );
+    println!(
+        "  trigger efficiency (data / fit): {:.4} of all events{}",
+        r.efficiency,
+        r.efficiency_below_fit.map_or(String::new(), |e| format!(
+            ", {e:.4} below the fit range (n < {})",
+            r.fit_range.0
+        ))
+    );
+    if r.efficiency > 1. {
+        eprintln!(
+            "Warning: the fit extrapolates fewer events below the fit range than were \
+             recorded (efficiency {:.4} > 1): the extrapolation of n(c_b) is not reliable",
+            r.efficiency
+        );
+    }
+    if r.reduced_statistic() > 2. {
+        eprintln!(
+            "Warning: the fit describes the data poorly ({} = {:.2})",
+            method.statistic_name(),
+            r.reduced_statistic()
+        );
+    }
+}
+
 /// Runs `f` in a thread pool with `n_threads` threads (all cores if `None`).
 pub fn with_threads<T: Send>(
     n_threads: Option<usize>,

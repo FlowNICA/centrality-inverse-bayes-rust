@@ -1,5 +1,6 @@
 // Configuration of the analysis steps: one section per executable in src/bin.
-// Each executable reads only its own section, e.g. `fit config.ron` reads `fit`.
+// Each executable reads only its own section, e.g. `fit config.ron` reads `fit`;
+// `run-all config.ron` runs fit and then define-centrality and needs both.
 // Within a section, every field except the input file and names is optional
 // and defaults to the value shown here. A leading "~/" in paths is expanded
 // to $HOME. Options may be written without Some(...).

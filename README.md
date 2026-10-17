@@ -290,7 +290,14 @@ cargo run --release --bin define-centrality -- config.ron
 # or
 target/release/fit config.ron
 target/release/define-centrality config.ron
+# or both steps in one go
+target/release/run-all config.ron
 ```
+
+`run-all` runs `fit` and then `define-centrality` with the same file, which
+needs both sections. Both are read and checked before the fit starts, and the
+centrality step uses the fit file just written (`<out_dir>/bayes_fit.root` of
+the `fit` section; a different `fit_file` is replaced, with a warning).
 
 - Only the input file(s) and histogram name are required; every other field
   defaults to the value shown in `config.ron`.
