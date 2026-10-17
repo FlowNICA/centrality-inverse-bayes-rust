@@ -666,6 +666,45 @@ the true turn-on within about 0.02 (e.g. 0.493 vs 0.500 at `n = 6`, 0.790 vs
 (`FitMinPercent`/`FitMaxPercent`), and the error propagation keeps `ε_i`
 fixed.
 
+#### The `Indra` mean and the trigger
+
+Frankland et al. attribute the offset `x_min` of the `Indra` mean
+(their `k_min`) to the trigger: the mean does not vanish for the most
+peripheral **recorded** events. In their approach the centrality and `P(b)`
+refer to the recorded events (`P(b)` of all detected events), not to the
+total inelastic cross section, and the trigger efficiency is not
+reconstructed. A toy tests both uses: 10⁶ Au+Au events of TGlauberMC
+(√s_NN = 27.5 GeV), `n` from a Gamma kernel around `0.9 N_part + 0.1 N_coll`
+and a measured trigger turn-on (efficient from `n ≈ 14`, `ε = 0.807`), with
+`b`, `n` and the trigger decision of each event as truth.
+
+- Percents of **all** events (`normalization: Free`, `fit_min: 15`, `P(b)` of
+  all events): `Indra` does not recover the lost events.
+
+  | mean | `N` (true 10⁶) | `-2 ln λ/ndf` | true width of the 10% classes | `<b>` fit - true |
+  |---|---|---|---|---|
+  | `Glauber` (optical) | +4.6% | 0.37 | 10.2-10.6% | -0.08 to -0.35 fm |
+  | `Indra` | +12.8% | 0.43 | 10.9-13.9% | -0.20 to -1.07 fm |
+  | `ExpPoly(3)` | -19% | 0.37 | 7.6-8.6% | +0.32 to +1.56 fm |
+
+  The fit quality is the same for all three. The `Glauber` mean is the
+  best, but not exact here, as the optical geometry differs from the Monte
+  Carlo one of the data.
+- Percents of the **recorded** events, as Frankland et al.
+  (`normalization: Data`, the whole distribution fitted, `P(b)` of the
+  recorded events): `Indra` (`-2 ln λ/ndf = 8.2`) reproduces the class widths
+  within 9.4-11.1% and `<b>` within 0.09 fm, as does `ExpPoly(3)` (2.3;
+  8.9-10.8%, 0.07 fm), while the `Glauber` mean, whose shape is fixed by the
+  geometry, cannot follow the turn-on (409; up to 1.4 fm). With `P(b)` of all
+  events instead, the same `Indra` fit gives `<b>` 0.3-1.4 fm too large.
+
+So it is this definition of the centrality, together with `P(b)` of the
+recorded events (which needs a simulation of the trigger), that handles the
+trigger, not the `Indra` form. Such percents are fractions of the recorded
+events (the "0-10%" class of the toy is 8.5% of all events). For percents of
+the total cross section use `Efficiency(ε)`, or `Free` with a `Glauber`,
+`Histogram` or `Tree` mean.
+
 ## Validation
 
 `examples/toy.rs` generates toy data with a known model: geometric `b` with
