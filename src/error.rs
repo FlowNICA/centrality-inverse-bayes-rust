@@ -18,6 +18,9 @@ pub enum Error {
     /// The fit did not produce a usable result.
     #[error("fit failed: {0}")]
     Fit(String),
+    /// The picture of the result could not be drawn.
+    #[error("cannot draw the picture: {0}")]
+    Plot(String),
     /// The worker thread pool could not be created.
     #[error("thread pool error: {0}")]
     ThreadPool(#[from] rayon::ThreadPoolBuildError),

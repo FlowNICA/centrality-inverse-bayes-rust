@@ -7,6 +7,7 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 minuit2 = "0.5"
 oxiroot = { git = "https://github.com/mathieuouillon/oxiroot", version = "0.3.0", default-features = false }
+plotters = { version = "0.3.7", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ab_glyph", "line_series", "point_series"] }
 rand = "0.10"
 rand_distr = "0.6"
 rayon = "1"

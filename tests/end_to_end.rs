@@ -140,7 +140,11 @@ fn recovers_parameters_and_impact_parameter() {
     });
     config.n_error_samples = 40;
     config.table_formats = vec![TableFormat::Csv, TableFormat::Tex, TableFormat::Cpp];
+    config.plot_title = Some("Toy, Au+Au".into());
     let r = centrality::run(&config).unwrap();
+    /* the picture of the result */
+    let png = std::fs::read(config.plot_path().unwrap()).unwrap();
+    assert!(png.starts_with(b"\x89PNG") && png.len() > 10_000);
     assert_eq!(r.classes.len(), 11);
     assert_eq!(r.n_error_samples, 40);
     for (k, c) in r.classes.iter().enumerate() {
@@ -182,6 +186,18 @@ fn recovers_parameters_and_impact_parameter() {
             [result.reduced_statistic()]
         );
         assert_eq!(numbers(&best, &file, "ndf").unwrap(), [result.ndf as f64]);
+        /* fit_histo: the expected counts, bins below one count empty */
+        let fit = Hist1D::read_root(&file, "fit_histo").unwrap();
+        for (i, &m) in result.model_counts.iter().enumerate() {
+            /* (FINAL.root recomputes the counts from the stored fit) */
+            let v = fit.contents[i + 1];
+            if m >= 1. + 1e-9 {
+                assert!((v - m).abs() < 1e-9 * m, "bin {}: {v} vs {m}", i + 1);
+            } else if m < 1. - 1e-9 {
+                assert_eq!(v, 0., "bin {}: {m}", i + 1);
+            }
+        }
+        assert!(result.model_counts.iter().any(|&m| m > 0. && m < 1.));
     }
 
     /* output file and tables */
@@ -400,6 +416,7 @@ fn ron_configuration_end_to_end() {
                     fit_file: "{dir}/bayes_fit.root",
                     out_dir: "{dir}",
                     n_classes: 5,
+                    plot_file: None,
                     impact_parameter: Histogram(file: "{data}", hist: "hMultMissing"),
                 ),
             )"#,
@@ -413,6 +430,7 @@ fn ron_configuration_end_to_end() {
     centrality_inverse_bayes_rust::run(fit).unwrap();
     /* a missing impact parameter histogram is reported */
     let c = CentralityConfig::from_ron_file(&config).unwrap();
+    assert_eq!(c.plot_path(), None);
     let err = centrality::run(&c).unwrap_err().to_string();
     assert!(err.contains("hMultMissing"), "{err}");
 }

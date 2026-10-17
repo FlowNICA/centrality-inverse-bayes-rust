@@ -162,6 +162,11 @@
         table_formats: [Csv, Cpp],
         table_name: "centrality_table",
 
+        // PNG picture of the data, the fit, data / fit and the class borders in out_dir
+        // (None: no picture), and the beginning of its header, e.g. experiment and system
+        plot_file: "centrality_result.png",
+        // plot_title: "BM@N Run8, Xe+Cs(I)",
+
         // n_threads: 8,
     ),
 )

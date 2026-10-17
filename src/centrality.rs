@@ -26,8 +26,8 @@ use crate::impact::ImpactProfile;
 use crate::model::{Model, NodeKernel, Quadrature};
 use crate::numeric::cholesky;
 use crate::output::{
-    StoredFit, best_result_tree, graph, histogram_2d, histogram_from_edges, histogram_like,
-    joint_counts, read_fit, set_2d, uniform_histogram,
+    StoredFit, best_result_tree, fit_histogram, graph, histogram_2d, histogram_from_edges,
+    histogram_like, joint_counts, read_fit, set_2d, uniform_histogram,
 };
 
 /// Mean, RMS and the range selected by a sharp cut at the class percents.
@@ -110,6 +110,8 @@ pub struct CentralityResult {
     pub efficiency: f64,
     /// Normalization of the fit.
     pub normalization: crate::config::Normalization,
+    /// Expected recorded events of the fit in the data bins.
+    pub model_counts: Vec<f64>,
 }
 
 /// The model with fixed parameters, with the kernels at the quadrature nodes.
@@ -372,6 +374,10 @@ pub fn run(config: &CentralityConfig) -> Result<CentralityResult> {
             std::fs::write(&path, crate::table::table(&result, format))?;
             println!("Table written to {}", path.display());
         }
+        if let Some(path) = config.plot_path() {
+            crate::plot::write_plot(&path, &fit, &result, config.plot_title.as_deref())?;
+            println!("Picture written to {}", path.display());
+        }
         Ok(result)
     })
 }
@@ -596,6 +602,7 @@ pub fn compute(
         pile_up_tail,
         efficiency: data.total / fit.norm,
         normalization: fit.normalization,
+        model_counts: model_counts.clone(),
     };
     let bins = ClassBins {
         borders: &borders,
@@ -1022,13 +1029,7 @@ fn final_objects(
         &class_of_bin,
         None,
     ));
-    objects.hists.push(histogram_like(
-        &data.hist,
-        "fit_histo",
-        "inverse Bayes fit",
-        model_counts,
-        None,
-    ));
+    objects.hists.push(fit_histogram(&data.hist, model_counts));
     objects.hists.push(data.hist.clone());
 
     /* joint distribution of the observable and b */

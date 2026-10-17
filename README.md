@@ -357,7 +357,9 @@ fit: (
 The fit writes `<out_dir>/bayes_fit.root` with
 
 - the data histogram (under its own name), `fit_histo` (fitted expected
-  counts in the data bins) and `fit_ratio` (data / fit);
+  counts in the data bins; bins below one count are left empty, so that, like
+  the data, it starts at 1 on a logarithmic y axis) and `fit_ratio` (data /
+  fit, from the full expected counts);
 - with pile-up, `fit_sng_histo` and `fit_plp_histo`: the single collision and
   pile-up parts of `fit_histo`;
 - `Mean_VS_Cb` (TGraphErrors, `n̄(c_b)` with `σ(c_b)` as errors) and
@@ -395,6 +397,8 @@ centrality: (
     n_error_samples: 200,
     table_formats: [Csv, Cpp],                                  // any of Tex, Csv, Cpp
     table_name: "centrality_table",
+    plot_file: "centrality_result.png",                         // None: no picture
+    // plot_title: "BM@N Run8, Xe+Cs(I)",
 ),
 ```
 
@@ -484,6 +488,19 @@ The table is printed to stdout and written in the requested formats; the
 `.C` macro has arrays of the borders and results and `GetCentMult(mult)`,
 which returns the middle of the class of `mult` in percent (the most central
 class is open above).
+
+`plot_file` (in `out_dir`) is a PNG picture of the result in the style of the
+ROOT canvases of the Γ-fit framework: on a logarithmic scale the data (blue
+points with errors) and the fit (red squares, bins with at least one expected
+count), with a vertical line at each class border, up to the fit, and the
+class names between them (where there is room); the header holds
+`plot_title`, the kernel, mean and variance as formulas, the fitted parameters
+(the pile-up probability `p` in percent) and the fit statistic per degree of
+freedom; with a normalization other than `Data` the trigger efficiency is
+shown in red. Below, data / fit with lines at 1, 0.9 and 1.1. The picture is
+drawn in pure Rust ([plotters](https://crates.io/crates/plotters)) with the
+Liberation Sans font embedded in the binary
+([`data/fonts`](data/fonts), SIL Open Font License).
 
 ### Impact parameter from the nuclear density
 

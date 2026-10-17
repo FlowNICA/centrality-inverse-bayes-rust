@@ -283,6 +283,14 @@ pub struct CentralityConfig {
     pub table_formats: Vec<TableFormat>,
     #[serde(default = "default_table_name")]
     pub table_name: String,
+    /// PNG picture of the data, the fit, the ratio and the class borders,
+    /// written to `out_dir`; `None` disables it.
+    #[serde(default = "default_plot_file")]
+    pub plot_file: Option<String>,
+    /// Beginning of the header of the picture, e.g. the experiment and the
+    /// colliding system.
+    #[serde(default)]
+    pub plot_title: Option<String>,
     #[serde(default)]
     pub n_threads: Option<usize>,
 }
@@ -337,6 +345,9 @@ fn default_table_formats() -> Vec<TableFormat> {
 }
 fn default_table_name() -> String {
     "centrality_table".into()
+}
+fn default_plot_file() -> Option<String> {
+    Some("centrality_result.png".into())
 }
 
 impl FitConfig {
@@ -496,6 +507,8 @@ impl CentralityConfig {
             seed: None,
             table_formats: default_table_formats(),
             table_name: default_table_name(),
+            plot_file: default_plot_file(),
+            plot_title: None,
             n_threads: None,
         }
     }
@@ -524,6 +537,11 @@ impl CentralityConfig {
 
     pub fn final_path(&self) -> PathBuf {
         self.out_dir.join(&self.final_file)
+    }
+
+    /// Path of the picture, if one is written.
+    pub fn plot_path(&self) -> Option<PathBuf> {
+        self.plot_file.as_ref().map(|f| self.out_dir.join(f))
     }
 
     pub fn table_path(&self, format: TableFormat) -> PathBuf {

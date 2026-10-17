@@ -86,6 +86,18 @@ pub fn histogram_like(
     h
 }
 
+/// `fit_histo`: the expected counts of the fit in the data bins, with the
+/// bins below one count left empty, so that, like the data histogram of
+/// counts, it starts at 1 on a logarithmic y axis instead of following the
+/// far tails of the model down to tiny fractions of an event.
+pub fn fit_histogram(like: &Hist1D, model_counts: &[f64]) -> Hist1D {
+    let shown: Vec<f64> = model_counts
+        .iter()
+        .map(|&m| if m >= 1. { m } else { 0. })
+        .collect();
+    histogram_like(like, "fit_histo", "inverse Bayes fit", &shown, None)
+}
+
 /// A histogram with the given bin edges, contents and errors.
 pub fn histogram_from_edges(
     name: &str,
@@ -196,13 +208,7 @@ pub fn write_fit(
     let p = &result.values;
     let quad = Quadrature::new(config.cb_points);
 
-    let fit = histogram_like(
-        &data.hist,
-        "fit_histo",
-        "inverse Bayes fit",
-        &result.model_counts,
-        None,
-    );
+    let fit = fit_histogram(&data.hist, &result.model_counts);
     let (ratio, ratio_err): (Vec<f64>, Vec<f64>) = data
         .counts
         .iter()
