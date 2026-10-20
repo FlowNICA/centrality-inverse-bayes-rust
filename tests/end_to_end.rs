@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use centrality_inverse_bayes_rust::output::{FIT_FILE_NAME, numbers, read_fit};
 use centrality_inverse_bayes_rust::{
     BorderMode, CentralityConfig, FitConfig, FitMethod, ImpactParameter, Kernel, MeanModel, Model,
-    Normalization, ParamConfig, TableFormat, VarianceModel, centrality,
+    MultPlot, Normalization, ParamConfig, TableFormat, VarianceModel, centrality,
 };
 use oxiroot::prelude::*;
 use rand::rngs::SmallRng;
@@ -140,7 +140,13 @@ fn recovers_parameters_and_impact_parameter() {
     });
     config.n_error_samples = 40;
     config.table_formats = vec![TableFormat::Csv, TableFormat::Tex, TableFormat::Cpp];
-    config.plot_title = Some("Toy, Au+Au".into());
+    config.mult_plot = Some(MultPlot {
+        title: Some("Toy, Au+Au".into()),
+        x_title: Some("N_ch".into()),
+        x_range: Some((0., 300.)),
+        y_range: Some((0.5, 1e7)),
+        ..Default::default()
+    });
     let r = centrality::run(&config).unwrap();
     /* the picture of the result */
     let png = std::fs::read(config.plot_path().unwrap()).unwrap();
@@ -416,7 +422,7 @@ fn ron_configuration_end_to_end() {
                     fit_file: "{dir}/bayes_fit.root",
                     out_dir: "{dir}",
                     n_classes: 5,
-                    plot_file: None,
+                    mult_plot: None,
                     impact_parameter: Histogram(file: "{data}", hist: "hMultMissing"),
                 ),
             )"#,

@@ -43,7 +43,7 @@ pub mod tf1;
 
 pub use centrality::CentralityResult;
 pub use config::{
-    BorderMode, CentralityConfig, FitConfig, FitMethod, ImpactParameter, Normalization,
+    BorderMode, CentralityConfig, FitConfig, FitMethod, ImpactParameter, MultPlot, Normalization,
     ParamConfig, TableFormat,
 };
 pub use error::{Error, Result};

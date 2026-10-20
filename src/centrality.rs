@@ -385,8 +385,8 @@ pub fn run(config: &CentralityConfig) -> Result<CentralityResult> {
             std::fs::write(&path, crate::table::table(&result, format))?;
             println!("Table written to {}", path.display());
         }
-        if let Some(path) = config.plot_path() {
-            crate::plot::write_plot(&path, &fit, &result, config.plot_title.as_deref())?;
+        if let (Some(plot), Some(path)) = (&config.mult_plot, config.plot_path()) {
+            crate::plot::write_plot(&path, &fit, &result, plot)?;
             println!("Picture written to {}", path.display());
         }
         Ok(result)

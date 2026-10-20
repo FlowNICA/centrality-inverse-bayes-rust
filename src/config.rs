@@ -285,14 +285,91 @@ pub struct CentralityConfig {
     pub table_name: String,
     /// PNG picture of the data, the fit, the ratio and the class borders,
     /// written to `out_dir`; `None` disables it.
-    #[serde(default = "default_plot_file")]
-    pub plot_file: Option<String>,
-    /// Beginning of the header of the picture, e.g. the experiment and the
-    /// colliding system.
-    #[serde(default)]
-    pub plot_title: Option<String>,
+    #[serde(default = "default_mult_plot")]
+    pub mult_plot: Option<MultPlot>,
     #[serde(default)]
     pub n_threads: Option<usize>,
+}
+
+/// The picture of the distribution of the observable, the fit and the
+/// classes written by `define-centrality`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultPlot {
+    /// File name in `out_dir`.
+    #[serde(default = "default_plot_file")]
+    pub file: String,
+    /// Beginning of the header, e.g. the experiment and the colliding system.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Title of the x axis; default: that of the data histogram, or its name.
+    #[serde(default)]
+    pub x_title: Option<String>,
+    /// Title of the y axis of the distribution.
+    #[serde(default = "default_y_title")]
+    pub y_title: String,
+    /// Title of the y axis of the ratio data / fit.
+    #[serde(default = "default_ratio_title")]
+    pub ratio_title: String,
+    /// Draw the class borders (vertical lines) and the class names.
+    #[serde(default = "default_true")]
+    pub class_borders: bool,
+    /// Range of the x axis; default: the histogram up to the last bin with
+    /// data or fit.
+    #[serde(default)]
+    pub x_range: Option<(f64, f64)>,
+    /// Range of the (logarithmic) y axis; default: from 0.4, with room for
+    /// the header above the data.
+    #[serde(default)]
+    pub y_range: Option<(f64, f64)>,
+    /// Range of the y axis of the ratio; default: 0.45 to 1.55, lower if the
+    /// ratio is.
+    #[serde(default)]
+    pub ratio_range: Option<(f64, f64)>,
+}
+
+impl Default for MultPlot {
+    fn default() -> Self {
+        MultPlot {
+            file: default_plot_file(),
+            title: None,
+            x_title: None,
+            y_title: default_y_title(),
+            ratio_title: default_ratio_title(),
+            class_borders: true,
+            x_range: None,
+            y_range: None,
+            ratio_range: None,
+        }
+    }
+}
+
+impl MultPlot {
+    pub fn validate(&self) -> Result<()> {
+        let err = |m: String| Err(Error::Config(format!("mult_plot: {m}")));
+        if self.file.trim().is_empty() {
+            return err("file must not be empty".into());
+        }
+        for (name, range) in [
+            ("x_range", self.x_range),
+            ("y_range", self.y_range),
+            ("ratio_range", self.ratio_range),
+        ] {
+            if let Some((lo, hi)) = range
+                && !(lo < hi && lo.is_finite() && hi.is_finite())
+            {
+                return err(format!("{name}: ({lo}, {hi}) must be increasing"));
+            }
+        }
+        if let Some((lo, _)) = self.y_range
+            && !(lo > 0.)
+        {
+            return err(format!(
+                "y_range must start above 0 (logarithmic axis), got {lo}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn default_out_dir() -> PathBuf {
@@ -346,8 +423,20 @@ fn default_table_formats() -> Vec<TableFormat> {
 fn default_table_name() -> String {
     "centrality_table".into()
 }
-fn default_plot_file() -> Option<String> {
-    Some("centrality_result.png".into())
+fn default_plot_file() -> String {
+    "centrality_result.png".into()
+}
+fn default_y_title() -> String {
+    "dN".into()
+}
+fn default_ratio_title() -> String {
+    "data/fit".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_mult_plot() -> Option<MultPlot> {
+    Some(MultPlot::default())
 }
 
 impl FitConfig {
@@ -518,8 +607,7 @@ impl CentralityConfig {
             seed: None,
             table_formats: default_table_formats(),
             table_name: default_table_name(),
-            plot_file: default_plot_file(),
-            plot_title: None,
+            mult_plot: default_mult_plot(),
             n_threads: None,
         }
     }
@@ -552,7 +640,7 @@ impl CentralityConfig {
 
     /// Path of the picture, if one is written.
     pub fn plot_path(&self) -> Option<PathBuf> {
-        self.plot_file.as_ref().map(|f| self.out_dir.join(f))
+        self.mult_plot.as_ref().map(|p| self.out_dir.join(&p.file))
     }
 
     pub fn table_path(&self, format: TableFormat) -> PathBuf {
@@ -583,6 +671,9 @@ impl CentralityConfig {
         }
         if self.b_max.is_some_and(|b| !(b > 0.)) {
             return err("b_max must be positive".into());
+        }
+        if let Some(plot) = &self.mult_plot {
+            plot.validate()?;
         }
         if self.n_threads == Some(0) {
             return err("n_threads must be positive".into());
@@ -748,6 +839,40 @@ mod tests {
             assert!(write(text).is_err(), "{text}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mult_plot_options() {
+        let parse = |plot: &str| {
+            let text = format!(r#"(centrality: (fit_file: "f.root", {plot}))"#);
+            parse_section::<CentralityConfig>(&text, "centrality").map(|c| c.validate().map(|_| c))
+        };
+        /* default: a picture with the default options */
+        let c = parse("").unwrap().unwrap();
+        assert_eq!(c.mult_plot, Some(MultPlot::default()));
+        assert_eq!(
+            c.plot_path(),
+            Some(PathBuf::from("./centrality_result.png"))
+        );
+        assert_eq!(parse("mult_plot: None").unwrap().unwrap().plot_path(), None);
+        let c = parse(
+            r#"mult_plot: (file: "p.png", title: "Toy", x_title: "N_{ch}", y_title: "counts",
+                ratio_title: "ratio", class_borders: false, x_range: (0, 300),
+                y_range: (0.5, 1e6), ratio_range: (0.8, 1.2))"#,
+        )
+        .unwrap()
+        .unwrap();
+        let p = c.mult_plot.unwrap();
+        assert_eq!(p.file, "p.png");
+        assert_eq!(p.x_title.as_deref(), Some("N_{ch}"));
+        assert!(!p.class_borders);
+        assert_eq!(p.x_range, Some((0., 300.)));
+        assert_eq!(p.y_range, Some((0.5, 1e6)));
+        /* invalid ranges, unknown fields, the former options */
+        assert!(parse("mult_plot: (x_range: (300, 0))").unwrap().is_err());
+        assert!(parse("mult_plot: (y_range: (0, 1e6))").unwrap().is_err());
+        assert!(parse("mult_plot: (colour: 1)").is_err());
+        assert!(parse(r#"plot_file: "p.png""#).is_err());
     }
 
     #[test]

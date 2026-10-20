@@ -170,10 +170,19 @@
         table_formats: [Csv, Cpp],
         table_name: "centrality_table",
 
-        // PNG picture of the data, the fit, data / fit and the class borders in out_dir
-        // (None: no picture), and the beginning of its header, e.g. experiment and system
-        plot_file: "centrality_result.png",
-        // plot_title: "BM@N Run8, Xe+Cs(I)",
+        // PNG picture of the data, the fit, data / fit and the class borders in out_dir;
+        // mult_plot: None for no picture. Every field is optional:
+        mult_plot: (
+            file: "centrality_result.png",
+            // title: "BM@N Run8, Xe+Cs(I)",   // beginning of the header (experiment, system)
+            // x_title: "N_{ch}",              // default: x title of the data histogram, or its name
+            y_title: "dN",
+            ratio_title: "data/fit",           // y title of the ratio below
+            class_borders: true,               // vertical lines and names of the classes
+            // x_range: (0, 300),              // default: up to the last bin with data or fit
+            // y_range: (0.4, 1e6),            // logarithmic; default: from 0.4, room for the header
+            // ratio_range: (0.45, 1.55),      // default: 0.45-1.55, lower if the ratio is
+        ),
 
         // n_threads: 8,
     ),

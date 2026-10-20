@@ -448,8 +448,7 @@ centrality: (
     n_error_samples: 200,
     table_formats: [Csv, Cpp],                                  // any of Tex, Csv, Cpp
     table_name: "centrality_table",
-    plot_file: "centrality_result.png",                         // None: no picture
-    // plot_title: "BM@N Run8, Xe+Cs(I)",
+    mult_plot: (file: "centrality_result.png"),                 // None: no picture
 ),
 ```
 
@@ -543,18 +542,37 @@ The table is printed to stdout and written in the requested formats; the
 which returns the middle of the class of `mult` in percent (the most central
 class is open above).
 
-`plot_file` (in `out_dir`) is a PNG picture of the result in the style of the
-ROOT canvases of the Γ-fit framework: on a logarithmic scale the data (blue
+`mult_plot` is a PNG picture of the result in the style of the ROOT
+canvases of the Γ-fit framework: on a logarithmic scale the data (blue
 points with errors) and the fit (red squares, bins with at least one expected
 count), with a vertical line at each class border, up to the fit, and the
-class names between them (where there is room); the header holds
-`plot_title`, the kernel, mean and variance as formulas, the fitted parameters
+class names between them (where there is room); the header holds the
+`title`, the kernel, mean and variance as formulas, the fitted parameters
 (the pile-up probability `p` in percent) and the fit statistic per degree of
 freedom; with a normalization other than `Data` the trigger efficiency is
 shown in red. Below, data / fit with lines at 1, 0.9 and 1.1. The picture is
 drawn in pure Rust ([plotters](https://crates.io/crates/plotters)) with the
 Liberation Sans font embedded in the binary
-([`data/fonts`](data/fonts), SIL Open Font License).
+([`data/fonts`](data/fonts), SIL Open Font License). Its options, all
+optional (`mult_plot: None` writes no picture):
+
+```ron
+mult_plot: (
+    file: "centrality_result.png",   // in out_dir
+    title: "BM@N Run8, Xe+Cs(I)",    // beginning of the header
+    x_title: "N_ch",                 // default: x title of the data histogram, or its name
+    y_title: "dN",
+    ratio_title: "data/fit",         // y title of the ratio
+    class_borders: true,             // vertical lines and names of the classes
+    x_range: (0, 300),               // default: up to the last bin with data or fit
+    y_range: (0.4, 1e6),             // logarithmic; default: from 0.4, with room for the header
+    ratio_range: (0.45, 1.55),       // default: 0.45-1.55, lower if the ratio is
+),
+```
+
+The titles are plain text: Greek letters and superscripts such as `χ²`
+render (Liberation Sans has no subscript characters), while the ROOT `#chi`
+and `_{...}` markup is not interpreted.
 
 ### Impact parameter from the nuclear density
 
