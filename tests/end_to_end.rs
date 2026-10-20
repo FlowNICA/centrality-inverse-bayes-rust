@@ -779,6 +779,34 @@ fn trigger_inefficiency_at_low_multiplicity() {
         );
     }
     assert_eq!(eff.contents[25], 1.);
+    /* the efficiency versus b: the recorded fraction of the events in each
+     * bin of b */
+    let eff_b = Hist1D::read_root(&fin, "Trigger_Efficiency_VS_B").unwrap();
+    let edges = eff_b.edges();
+    let (mut checked, mut worst) = (0, 0f64);
+    for i in 0..edges.len() - 1 {
+        let in_bin = |e: &&(f64, f64)| e.0 >= edges[i] && e.0 < edges[i + 1];
+        let n_all = all.iter().filter(in_bin).count() as f64;
+        if n_all < 1000. {
+            continue;
+        }
+        let truth = recorded.iter().filter(in_bin).count() as f64 / n_all;
+        worst = worst.max((eff_b.contents[i + 1] - truth).abs());
+        checked += 1;
+    }
+    assert!(
+        checked > 100 && worst < 0.05,
+        "{checked} bins, worst {worst}"
+    );
+    assert!(eff_b.contents[1] > 0.9999, "{}", eff_b.contents[1]);
+    /* versus c_b: its average over c_b is the efficiency of single collisions */
+    let eff_cb = Hist1D::read_root(&fin, "Trigger_Efficiency_VS_Cb").unwrap();
+    let n_cb = eff_cb.xaxis.nbins as usize;
+    let average = eff_cb.contents[1..=n_cb].iter().sum::<f64>() / n_cb as f64;
+    assert!(
+        (average - true_efficiency).abs() < 0.01,
+        "{average} vs {true_efficiency}"
+    );
 
     /* free normalization: N from the extrapolation of ExpPoly below the fit
      * range, which is not constrained (here it even finds fewer events than

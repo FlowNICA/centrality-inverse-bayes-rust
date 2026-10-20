@@ -531,7 +531,10 @@ centrality: (
   data and the fit in each class;
 - `Centrality_vs_Multiplicity`: the upper percent of the class of each bin;
 - `Trigger_Efficiency`: the trigger efficiency of each bin used for the
-  classes (see [Trigger efficiency](#trigger-efficiency));
+  classes, and `Trigger_Efficiency_VS_Cb` and, with `impact_parameter`,
+  `Trigger_Efficiency_VS_B`: the efficiency of the events in each bin of
+  `c_b` (`cb_bins`) and of `b` (`b_bins`) (see
+  [Trigger efficiency](#trigger-efficiency));
 - `fit_histo`, the data histogram, and `B_VS_Multiplicity` (TH2D, expected
   single-collision events versus `n` and `b`).
 
@@ -716,6 +719,21 @@ the true turn-on within about 0.02 (e.g. 0.493 vs 0.500 at `n = 6`, 0.790 vs
 0.791 at `n = 8`). The class percents and borders still refer to all events
 (`FitMinPercent`/`FitMaxPercent`), and the error propagation keeps `ε_i`
 fixed.
+
+The same `ε_i` give the trigger efficiency versus centrality and impact
+parameter (of single collisions),
+
+```
+ε(c_b) = Σ_i ε_i P(n ∈ bin i | c_b)
+```
+
+averaged over the events of each bin of `c_b` (`Trigger_Efficiency_VS_Cb`)
+and of `b` (`Trigger_Efficiency_VS_B`, over `[c_b(b₀), c_b(b₁)]`, i.e.
+weighted with `P(b)`); its average over `c_b` is the efficiency of all
+events. On the toy above the efficiency of each bin of `b` agrees with the
+recorded fraction of the toy events in it within 0.027 (132 bins of 0.074 fm
+with at least 1000 events): it is 1 up to `b ≈ 11.5` fm and falls to 0.71 at
+13 fm and 0.13 at 14.5 fm.
 
 #### The `Indra` mean and the trigger
 

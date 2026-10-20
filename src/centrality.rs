@@ -228,6 +228,17 @@ impl<'a> Calc<'a> {
         (total, cb, b)
     }
 
+    /// Mean of `P(recorded in the class | c_b)` over `[c0, c1]` (its value at
+    /// `c0` for an empty interval); for a selection of all values of the
+    /// observable, the trigger efficiency of the events in `[c0, c1]`.
+    fn mean_probability_in(&self, sel: &Selection, c0: f64, c1: f64) -> f64 {
+        if c1 > c0 {
+            self.class_probability_in(sel, c0, c1) / (c1 - c0)
+        } else {
+            sel.probability(&self.model.kernel_at(self.p, c0.clamp(0., 1.)))
+        }
+    }
+
     /// `∫ P(recorded in the class | c_b) dc_b` over `[c0, c1]`.
     fn class_probability_in(&self, sel: &Selection, c0: f64, c1: f64) -> f64 {
         if !(c1 > c0) {
@@ -1014,6 +1025,35 @@ fn final_objects(
                 *v = c.max_percent;
             }
         }
+    }
+    /* trigger efficiency versus c_b and b: ε(c_b) = Σ_i ε_i P(n ∈ bin i | c_b)
+     * of single collisions, averaged over the events in each bin */
+    let all = Selection::new(&data.edges, efficiency, f64::NEG_INFINITY, f64::INFINITY);
+    let cb_efficiency: Vec<f64> = cb_edges
+        .par_windows(2)
+        .map(|w| calc.mean_probability_in(&all, w[0], w[1]))
+        .collect();
+    objects.hists.push(uniform_histogram(
+        "Trigger_Efficiency_VS_Cb",
+        "trigger efficiency of the events in each bin of c_{b};c_{b};efficiency",
+        0.,
+        1.,
+        &cb_efficiency,
+        None,
+    ));
+    if let Some(ip) = impact {
+        let b_efficiency: Vec<f64> = b_edges
+            .par_windows(2)
+            .map(|w| calc.mean_probability_in(&all, ip.cb_of_b(w[0]), ip.cb_of_b(w[1])))
+            .collect();
+        objects.hists.push(uniform_histogram(
+            "Trigger_Efficiency_VS_B",
+            "trigger efficiency of the events in each bin of b;b, fm;efficiency",
+            0.,
+            b_max,
+            &b_efficiency,
+            None,
+        ));
     }
     objects.hists.push(histogram_like(
         &data.hist,
