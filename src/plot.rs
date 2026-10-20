@@ -337,6 +337,7 @@ fn model_text(model: &Model) -> Vec<String> {
         } => format!("mean = μ[f N_part + (1 − f) N_coll] ({nucleus_a}+{nucleus_b})"),
         MeanModel::Histogram { hist, .. } => format!("mean = mean_scale × mean n(b) of {hist}"),
         MeanModel::Tree { tree, .. } => format!("mean = mean_scale × mean n(b) of {tree}"),
+        MeanModel::Idrisov { func, .. } => format!("mean = m1·{func}(c_b)"),
     };
     let variance = match &model.variance {
         VarianceModel::Proportional => "σ² = θ·mean".to_string(),
@@ -344,6 +345,7 @@ fn model_text(model: &Model) -> Vec<String> {
         VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => {
             "σ² = variance_scale × Var n(b)".to_string()
         }
+        VarianceModel::Idrisov { func, .. } => format!("σ² = m1²·{func}(c_b) + m1·m2·mean"),
     };
     vec![kernel.to_string(), mean, variance]
 }

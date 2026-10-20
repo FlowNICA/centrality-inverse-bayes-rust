@@ -48,12 +48,14 @@ described by a kernel `P(n|c_b)` with mean `n̄(c_b)` and variance `σ²(c_b)`:
 | `Indra` | `x_max · (1 - c_b^α)^γ + x_min` | `x_max, x_min, alpha, gamma` |
 | `Glauber(...)` | `μ · [f ⟨N_part⟩(c_b) + (1 - f) ⟨N_coll⟩(c_b)]` from the optical Glauber model | `mu, f` |
 | `Histogram(...)` | `mean_scale · ⟨n⟩(b(c_b))` from a 2-D histogram of `n` and `b` | `mean_scale` |
+| `Idrisov(...)` | `m1 · max(f_m(c_b), 0.1)` with a `TF1` `f_m` of a model | `m1` |
 
 | `variance` | `σ²(c_b)` |
 |------------|-----------|
 | `Proportional` (default) | `θ · n̄(c_b)` (constant reduced variance, scenario A of Das et al.) |
 | `Constant` | `θ · n̄(0)` (constant width, scenario B) |
 | `Histogram(...)` | `variance_scale · Var(n)(b(c_b))` from a 2-D histogram of `n` and `b`; `variance_scale` replaces `θ` |
+| `Idrisov(...)` | `max(m1² f_D(c_b) + m1 m2 n̄(c_b), 0.1)` with a `TF1` `f_D` of a model; with the `Idrisov` mean only, `m2` replaces `θ` |
 
 The `Glauber` mean is the two-component model of the MC-Glauber fit of
 centrality-glauber-rust (`mode: "Default"`), with the mean numbers of
@@ -179,8 +181,50 @@ their errors and stable for `b_bins` from 30 to 1000 (`variance_scale` 1.04,
 coarse (`variance_scale = 1.49`, and a worse fit). `<b>` of the classes is
 within 0.1 fm of the truth.
 
-The parameter vector is `theta` (or `variance_scale`) followed by the mean
-parameters. `n_knee = n̄(0)`
+### Mean and variance of Idrisov et al.
+
+The `Idrisov` mean and variance are the parametrization of the Γ-fit of
+D. Idrisov et al. (`GammaFit.cpp`): the mean `f_m(c_b)` and the variance
+`f_D(c_b)` of the observable versus `c_b` of a model (e.g. DCM-SMM through
+the simulation of the detector) are given as functions, `TF1`s fitted in
+ROOT, and the data fix two parameters:
+
+```
+n̄(c_b)  = m1 · max(f_m(c_b), 0.1)
+σ²(c_b) = max(m1² f_D(c_b) + m1 m2 n̄(c_b), 0.1)
+```
+
+`m1` scales the observable (e.g. a different efficiency), with which the
+variance of the model scales as `m1²`, and `m2` adds a part proportional to
+the mean (`m2 = 0`: the variance of the model; it may be negative). The
+lower limits 0.1 are those of the original. As the variance depends on `m1`,
+the two are used together:
+
+```ron
+mean: Idrisov(file: "~/MeanVar.root", func: "F_mM"),       // func: default "F_mM"
+variance: Idrisov(file: "~/MeanVar.root", func: "F_DM"),   // func: default "F_DM"
+```
+
+The parameters are `m2` (in place of `theta`) and `m1`. The functions are
+read with their formula and parameters and tabulated on 10⁴ intervals of
+`c_b`; formulas that oxiroot cannot parse directly, such as the `polN` of
+ROOT (written with `TMath::Sq`), are rewritten (`TMath::Sq(x)` to
+`pow(x,2)`, `TMath::Exp` to `exp`, ...). A `TF1` of a compiled C++ function
+(e.g. `fPbFitFull`, the `P(b)` of the original files) has no formula and
+cannot be read; `P(b)` is the `impact_parameter` of `define-centrality`. The
+start value of `m1` comes from the measured centrality in the limit of
+vanishing fluctuations, and `m2` is scanned from -0.5 to 6. As for the
+other means from a model, `normalization: Free` gives no warning.
+
+On a toy with `f_m` the `ExpPoly(3)` toy mean of the
+[Validation](#validation), `f_D = 1.1 f_m`, and `m1 = 0.8`, `m2 = 0.5`
+(4·10⁵ events), the fit gives `m1 = 0.8004 ± 0.0012`, `m2 = 0.43 ± 0.09`,
+and `<b>` and its RMS in every class within 0.015 fm of the truth. For the
+`F_mM` (exponential of a polynomial) and `F_DM` (`pol14`) of the original
+files the tabulated functions agree with ROOT.
+
+The parameter vector is `theta` (or `variance_scale`, or `m2`) followed by
+the mean parameters. `n_knee = n̄(0)`
 is the knee of the distribution, `σ(0) = √(θ n_knee)` the width of the
 fluctuations in the most central collisions, and `c_knee = P(n > n_knee)` the
 fraction of events above the knee, a measure of the centrality resolution.
@@ -349,11 +393,11 @@ fit: (
   - `Free`: `N` is fitted from the bins in the fit range (profiled
     analytically) and the model extrapolates below it.
 - `params`: start value (`value`), step, limits (`min`, `max`) and `fixed` for
-  any parameter, by name (`theta` or `variance_scale`, `n_knee`, `a1`, ..., or
-  `x_max`, `x_min`, `alpha`, `gamma`, or `mu`, `f`, or `mean_scale`). By
-  default `theta`, `variance_scale`, `mean_scale`, `n_knee`, `x_max`,
-  `x_min`, `alpha`, `gamma` and `mu` are limited to positive values, and `f`
-  to `[0, 1]`.
+  any parameter, by name (`theta`, `variance_scale` or `m2`, `n_knee`, `a1`,
+  ..., or `x_max`, `x_min`, `alpha`, `gamma`, or `mu`, `f`, or `mean_scale`,
+  or `m1`). By default `theta`, `variance_scale`, `mean_scale`, `m1`,
+  `n_knee`, `x_max`, `x_min`, `alpha`, `gamma` and `mu` are limited to
+  positive values, and `f` to `[0, 1]`; `m2` is free.
 - `pile_up`: adds the parameter `p` (default limits `[0, 0.5]`, it can be
   fixed in `params` like any other); see [Pile-up](#pile-up).
 - `cb_points`: more points are only needed for very narrow kernels; the toy

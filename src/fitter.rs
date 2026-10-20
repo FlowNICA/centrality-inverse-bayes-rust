@@ -193,7 +193,10 @@ impl Fitter {
         if self.config.normalization == Normalization::Free
             && !matches!(
                 self.model.mean,
-                MeanModel::Glauber { .. } | MeanModel::Histogram { .. } | MeanModel::Tree { .. }
+                MeanModel::Glauber { .. }
+                    | MeanModel::Histogram { .. }
+                    | MeanModel::Tree { .. }
+                    | MeanModel::Idrisov { .. }
             )
         {
             eprintln!(
@@ -427,20 +430,24 @@ impl Fitter {
     ) -> Vec<Vec<f64>> {
         /* the first parameter, from the relative width σ(0)/n_knee (σ(0)² =
          * θ n̄(0) for both variance models), or around the variance of the
-         * histogram, which is taken to scale like the mean */
+         * histogram, which is taken to scale like the mean; m2 of the Idrisov
+         * variance around 0, the variance of the model */
+        let idrisov = matches!(self.model.variance, VarianceModel::Idrisov { .. });
         let first: Vec<f64> = if theta_given {
             vec![f64::NAN]
+        } else if idrisov {
+            vec![-0.5, -0.25, 0., 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4., 6.]
         } else {
             (0..16)
                 .map(|i| {
                     let t = i as f64 / 15.;
                     match self.model.variance {
-                        VarianceModel::Proportional | VarianceModel::Constant => {
-                            let r = 0.004 * (0.6f64 / 0.004).powf(t);
-                            r * r * n_knee
-                        }
                         VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => {
                             0.05 * (20f64 / 0.05).powf(t)
+                        }
+                        _ => {
+                            let r = 0.004 * (0.6f64 / 0.004).powf(t);
+                            r * r * n_knee
                         }
                     }
                 })
@@ -462,7 +469,7 @@ impl Fitter {
                     let mut p = start.to_vec();
                     scale_mean(&self.model, &mut p, s);
                     if v.is_finite() {
-                        p[0] = v * s;
+                        p[0] = if idrisov { v } else { v * s };
                     }
                     clamp_to_limits(&mut p, user);
                     p
@@ -504,6 +511,12 @@ impl Fitter {
             MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
                 let profile = self.model.mean_profile().expect("histogram profile");
                 Ok(vec![prefit_scale(&points, |c| profile.mean(c))])
+            }
+            MeanModel::Idrisov { .. } => {
+                /* n̄ = m1 g(c_b): the mean with m1 = 1 */
+                let mut unit = vec![0.; self.model.n_params()];
+                unit[1] = 1.;
+                Ok(vec![prefit_scale(&points, |c| self.model.mean(&unit, c))])
             }
         }
     }
@@ -656,9 +669,10 @@ fn scale_mean(model: &Model, p: &mut [f64], s: f64) {
             p[1] *= s;
             p[2] *= s;
         }
-        MeanModel::Glauber { .. } | MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
-            p[1] *= s
-        }
+        MeanModel::Glauber { .. }
+        | MeanModel::Histogram { .. }
+        | MeanModel::Tree { .. }
+        | MeanModel::Idrisov { .. } => p[1] *= s,
     }
 }
 
@@ -701,17 +715,22 @@ fn param_specs(
             let glauber = matches!(model.mean, MeanModel::Glauber { .. });
             /* the fraction f of the Glauber mean is limited to [0, 1] */
             let fraction = glauber && i == 2;
+            /* m2 of the Idrisov variance may be negative */
+            let idrisov_m2 = i == 0 && matches!(model.variance, VarianceModel::Idrisov { .. });
             let positive = match model.mean {
                 _ if is_pile_up => true,
+                _ if idrisov_m2 => false,
                 MeanModel::ExpPoly(_) => i <= 1,
                 MeanModel::Indra
                 | MeanModel::Glauber { .. }
                 | MeanModel::Histogram { .. }
-                | MeanModel::Tree { .. } => true,
+                | MeanModel::Tree { .. }
+                | MeanModel::Idrisov { .. } => true,
             };
             let default_step = match (&model.mean, i) {
                 _ if is_pile_up => 0.5 * v.abs().max(1e-4),
                 _ if fraction => 0.05,
+                _ if idrisov_m2 => 0.1 * v.abs().max(1.),
                 (_, 0) => 0.1 * v.abs(),
                 (_, 1) => 0.02 * v.abs(),
                 (MeanModel::Indra, 2) => 0.1 * v.abs().max(1e-3 * start[1].abs()),

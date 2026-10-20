@@ -45,6 +45,10 @@
         //                inelastic events, in b_bins (default 100) bins of equal numbers of
         //                events; c_b of an event from its rank in b
         //                parameters: theta, mean_scale
+        //   Idrisov(file: "./data/meanvar_dcm_tfunc.root", func: "F_mM")
+        //              - m1 * max(f_m(c_b), 0.1), f_m a TF1 of c_b (mean of a model, func default
+        //                "F_mM"); only with the Idrisov variance (Idrisov et al., GammaFit.cpp)
+        //                parameters: m2, m1
         mean: ExpPoly(3),
 
         // Variance of n versus c_b:
@@ -55,6 +59,9 @@
         //                  events as for the mean; the parameter variance_scale replaces theta
         //   Tree(file: "~/model.root", tree: "events", b_branch: "B", n_branch: "Mult")
         //                - variance_scale * Var(n)(c_b) from a tree, as for the mean
+        //   Idrisov(file: "./data/meanvar_dcm_tfunc.root", func: "F_DM")
+        //                - max(m1^2 f_D(c_b) + m1 m2 mean, 0.1), f_D a TF1 of c_b (variance of a
+        //                  model, func default "F_DM"); only with the Idrisov mean; m2 replaces theta
         variance: Proportional,
 
         // Pile-up: with probability p (fit parameter "p"), a recorded event is the

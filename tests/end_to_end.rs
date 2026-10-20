@@ -1020,3 +1020,80 @@ fn mean_and_variance_from_a_tree_of_n_and_b() {
         .to_string();
     assert!(err.contains("too few"), "{err}");
 }
+
+#[test]
+fn idrisov_mean_and_variance_from_functions_of_cb() {
+    let dir = test_dir("idrisov");
+    /* f_m: the mean of the toy model, f_D = 1.1 f_m, as TF1s of c_b */
+    let exp_poly = "[0]*exp(-[1]*x-[2]*x*x-[3]*x*x*x)";
+    let mut f_m = Func1D::new("F_mM", exp_poly, 0., 1.).unwrap();
+    f_m.set_params(&TRUTH[1..]);
+    let mut f_d = Func1D::new("F_DM", &format!("[4]*{exp_poly}"), 0., 1.).unwrap();
+    f_d.set_params(&[TRUTH[1], TRUTH[2], TRUTH[3], TRUTH[4], 1.1]);
+    let functions = dir.join("meanvar.root");
+    FileWriter::create(&functions)
+        .add(&f_m)
+        .add(&f_d)
+        .write(Compression::default())
+        .unwrap();
+
+    /* data: n̄ = m1 f_m, σ² = m1² f_D + m1 m2 n̄ with m1 = 0.8, m2 = 0.5 */
+    let mean: MeanModel = format!(r#"Idrisov(file: "{}")"#, functions.display())
+        .parse()
+        .unwrap();
+    let variance: VarianceModel = format!(r#"Idrisov(file: "{}")"#, functions.display())
+        .parse()
+        .unwrap();
+    let model = Model::new(Kernel::Gamma, mean.clone(), variance.clone(), false).unwrap();
+    assert_eq!(model.param_names(), ["m2", "m1"]);
+    let truth = [0.5, 0.8];
+    let b_max = (SIGMA_INEL / PI).sqrt();
+    let mut rng = SmallRng::seed_from_u64(31);
+    let events: Vec<(f64, f64)> = (0..400_000)
+        .map(|_| {
+            let b = b_max * rng.random::<f64>().sqrt();
+            let cb = PI * b * b / SIGMA_INEL;
+            let m = model.mean(&truth, cb);
+            let v = model.variance(&truth, cb, m);
+            let n = Gamma::new(m * m / v, v / m).unwrap().sample(&mut rng);
+            (b, n.floor())
+        })
+        .collect();
+    let data = dir.join("toy.root");
+    write_toy(&data, &events, 300, 300.);
+
+    let mut c = fit_config(&dir, &data);
+    c.mean = mean.clone();
+    c.variance = variance.clone();
+    let r = centrality_inverse_bayes_rust::run(c.clone()).unwrap();
+    assert!(r.valid);
+    assert_eq!(r.names, ["m2", "m1"]);
+    for (((name, v), e), t) in r.names.iter().zip(&r.values).zip(&r.errors).zip(truth) {
+        let pull = (v - t) / e;
+        assert!(pull.abs() < 4., "{name}: {v} +- {e} vs {t} (pull {pull})");
+    }
+    assert!(r.reduced_statistic() < 1.5, "{}", r.reduced_statistic());
+
+    /* the fit file rebuilds the model from the functions */
+    let stored = read_fit(&dir.join(FIT_FILE_NAME)).unwrap();
+    assert_eq!(stored.model.mean, mean);
+    assert_eq!(stored.model.variance, variance);
+    let mut config = CentralityConfig::new(dir.join(FIT_FILE_NAME));
+    config.out_dir = dir.clone();
+    config.classes = Some(vec![0., 10., 20., 40., 60., 80., 100.]);
+    config.impact_parameter = Some(ImpactParameter::Geometric {
+        sigma_inel: SIGMA_INEL,
+    });
+    let classes = centrality::run(&config).unwrap();
+    for (k, class) in classes.classes.iter().enumerate() {
+        let b = class.b.unwrap().mean;
+        let t = true_mean_b(&events, class.min_border, class.max_border, k == 0);
+        assert!((b - t).abs() < 0.1, "class {}: {b} vs {t}", class.label());
+    }
+
+    /* the mean and the variance are used together */
+    let mut alone = c;
+    alone.variance = VarianceModel::Proportional;
+    let err = alone.validate().unwrap_err().to_string();
+    assert!(err.contains("used together"), "{err}");
+}

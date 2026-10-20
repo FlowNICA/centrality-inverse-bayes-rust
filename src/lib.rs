@@ -39,6 +39,7 @@ pub mod output;
 pub mod plot;
 pub mod profile;
 pub mod table;
+pub mod tf1;
 
 pub use centrality::CentralityResult;
 pub use config::{

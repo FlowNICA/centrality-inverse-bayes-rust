@@ -34,6 +34,12 @@ use crate::error::Error;
 use crate::numeric::{composite_gauss_legendre, gamma_pq, ln_gamma, normal_cdf, normal_sf};
 use crate::optical::{GlauberMean, GlauberSpec};
 use crate::profile::{Axis, CbProfile, HistogramSpec, ProfileSpec, TreeSpec};
+use crate::tf1::{CbFunction, FunctionSpec};
+
+/// Lower limits of the `Idrisov` mean function and variance (`Mchmin` and
+/// `DMcmin` of its implementation).
+const IDRISOV_MEAN_MIN: f64 = 0.1;
+const IDRISOV_VARIANCE_MIN: f64 = 0.1;
 
 /// Probabilities below this are treated as zero when walking into the tails.
 const TAIL_CUT: f64 = 1e-22;
@@ -106,6 +112,22 @@ pub enum MeanModel {
         #[serde(default)]
         b_bins: Option<usize>,
     },
+    /// `n̄ = m1 · max(f_m(c_b), 0.1)` (Idrisov et al.), with the mean `f_m`
+    /// of the observable versus `c_b` of a model given as the `TF1` `func`
+    /// (default `F_mM`) in `file`. Used together with the `Idrisov` variance.
+    Idrisov {
+        file: PathBuf,
+        #[serde(default = "default_idrisov_mean")]
+        func: String,
+    },
+}
+
+fn default_idrisov_mean() -> String {
+    "F_mM".into()
+}
+
+fn default_idrisov_variance() -> String {
+    "F_DM".into()
 }
 
 impl MeanModel {
@@ -122,6 +144,18 @@ impl MeanModel {
             MeanModel::Histogram { .. } | MeanModel::Tree { .. } => {
                 vec!["mean_scale".to_string()]
             }
+            MeanModel::Idrisov { .. } => vec!["m1".to_string()],
+        }
+    }
+
+    /// The function of the `Idrisov` mean.
+    pub fn function_spec(&self) -> Option<FunctionSpec> {
+        match self {
+            MeanModel::Idrisov { file, func } => Some(FunctionSpec {
+                file: file.clone(),
+                func: func.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -223,6 +257,16 @@ pub enum VarianceModel {
         #[serde(default)]
         b_bins: Option<usize>,
     },
+    /// `σ² = max(m1² f_D(c_b) + m1 m2 n̄(c_b), 0.1)` (Idrisov et al.), with
+    /// the variance `f_D` of the observable versus `c_b` of a model given as
+    /// the `TF1` `func` (default `F_DM`) in `file`; `m1` is the parameter of
+    /// the `Idrisov` mean, with which it must be used, and `m2` replaces
+    /// `theta`.
+    Idrisov {
+        file: PathBuf,
+        #[serde(default = "default_idrisov_variance")]
+        func: String,
+    },
 }
 
 impl VarianceModel {
@@ -230,7 +274,19 @@ impl VarianceModel {
     pub fn param_name(&self) -> &'static str {
         match self {
             VarianceModel::Histogram { .. } | VarianceModel::Tree { .. } => "variance_scale",
+            VarianceModel::Idrisov { .. } => "m2",
             _ => "theta",
+        }
+    }
+
+    /// The function of the `Idrisov` variance.
+    pub fn function_spec(&self) -> Option<FunctionSpec> {
+        match self {
+            VarianceModel::Idrisov { file, func } => Some(FunctionSpec {
+                file: file.clone(),
+                func: func.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -308,6 +364,10 @@ pub struct Model {
     mean_profile: Option<Arc<CbProfile>>,
     /// `Var(n)` versus `c_b` for the `Histogram` variance.
     variance_profile: Option<Arc<CbProfile>>,
+    /// `f_m(c_b)` of the `Idrisov` mean.
+    mean_function: Option<Arc<CbFunction>>,
+    /// `f_D(c_b)` of the `Idrisov` variance.
+    variance_function: Option<Arc<CbFunction>>,
 }
 
 impl Model {
@@ -328,6 +388,16 @@ impl Model {
             |spec: Option<ProfileSpec>| spec.map(|spec| spec.build().map(Arc::new)).transpose();
         let mean_profile = profile(mean.profile_spec())?;
         let variance_profile = profile(variance.profile_spec())?;
+        if mean.function_spec().is_some() != variance.function_spec().is_some() {
+            return Err(Error::Config(format!(
+                "the Idrisov mean and variance are used together (the variance depends on \
+                 m1 of the mean), got mean {mean} and variance {variance}"
+            )));
+        }
+        let function =
+            |spec: Option<FunctionSpec>| spec.map(|spec| spec.build().map(Arc::new)).transpose();
+        let mean_function = function(mean.function_spec())?;
+        let variance_function = function(variance.function_spec())?;
         Ok(Model {
             kernel,
             mean,
@@ -336,6 +406,8 @@ impl Model {
             glauber,
             mean_profile,
             variance_profile,
+            mean_function,
+            variance_function,
         })
     }
 
@@ -416,7 +488,17 @@ impl Model {
                     .expect("the histogram profile is built by Model::new")
                     .mean(cb)
             }
+            MeanModel::Idrisov { .. } => p[1] * self.idrisov_mean_function(cb),
         }
+    }
+
+    /// `max(f_m(c_b), 0.1)` of the `Idrisov` mean.
+    fn idrisov_mean_function(&self, cb: f64) -> f64 {
+        self.mean_function
+            .as_ref()
+            .expect("the Idrisov function is built by Model::new")
+            .at(cb)
+            .max(IDRISOV_MEAN_MIN)
     }
 
     /// The knee: mean of `n` at zero impact parameter, `n̄(0)`.
@@ -436,6 +518,15 @@ impl Model {
                     .expect("the histogram profile is built by Model::new")
                     .variance(cb)
             }
+            VarianceModel::Idrisov { .. } => {
+                let (m1, m2) = (p[1], p[0]);
+                let f_d = self
+                    .variance_function
+                    .as_ref()
+                    .expect("the Idrisov function is built by Model::new")
+                    .at(cb);
+                (m1 * m1 * f_d + m1 * m2 * mean).max(IDRISOV_VARIANCE_MIN)
+            }
         }
     }
 
@@ -451,9 +542,13 @@ impl Model {
     }
 
     /// Whether `p` is a valid parameter vector (finite, positive `θ` and mean,
-    /// pile-up probability in `[0, 1)`).
+    /// pile-up probability in `[0, 1)`; `m2` of the `Idrisov` variance may be
+    /// negative).
     pub fn is_valid(&self, p: &[f64]) -> bool {
-        if p.len() != self.n_params() || !p.iter().all(|v| v.is_finite()) || !(p[0] > 0.) {
+        if p.len() != self.n_params() || !p.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        if !matches!(self.variance, VarianceModel::Idrisov { .. }) && !(p[0] > 0.) {
             return false;
         }
         if !(0. ..1.).contains(&self.pile_up_probability(p)) {
@@ -465,7 +560,9 @@ impl Model {
                 p[1] >= 0. && p[2] >= 0. && p[1] + p[2] > 0. && p[3] > 0. && p[4] > 0.
             }
             MeanModel::Glauber { .. } => p[1] > 0. && (0. ..=1.).contains(&p[2]),
-            MeanModel::Histogram { .. } | MeanModel::Tree { .. } => p[1] > 0.,
+            MeanModel::Histogram { .. } | MeanModel::Tree { .. } | MeanModel::Idrisov { .. } => {
+                p[1] > 0.
+            }
         }
     }
 
@@ -735,6 +832,10 @@ impl fmt::Display for VarianceModel {
                 let spec = self.tree_spec().expect("Tree variance");
                 write!(f, "Tree({})", spec.ron_fields())
             }
+            VarianceModel::Idrisov { .. } => {
+                let spec = self.function_spec().expect("Idrisov variance");
+                write!(f, "Idrisov({})", spec.ron_fields())
+            }
         }
     }
 }
@@ -763,6 +864,10 @@ impl fmt::Display for MeanModel {
             MeanModel::Tree { .. } => {
                 let spec = self.tree_spec().expect("Tree mean");
                 write!(f, "Tree({})", spec.ron_fields())
+            }
+            MeanModel::Idrisov { .. } => {
+                let spec = self.function_spec().expect("Idrisov mean");
+                write!(f, "Idrisov({})", spec.ron_fields())
             }
         }
     }
@@ -1065,6 +1170,8 @@ mod tests {
                         glauber: None,
                         mean_profile: None,
                         variance_profile: None,
+                        mean_function: None,
+                        variance_function: None,
                     },
                     vec![1.2, 200., 3.5, 0.8, 1.6],
                 ));
@@ -1077,6 +1184,8 @@ mod tests {
                         glauber: None,
                         mean_profile: None,
                         variance_profile: None,
+                        mean_function: None,
+                        variance_function: None,
                     },
                     vec![0.8, 150., 4., 1.2, 1.5],
                 ));
@@ -1173,6 +1282,8 @@ mod tests {
             glauber: None,
             mean_profile: None,
             variance_profile: None,
+            mean_function: None,
+            variance_function: None,
         };
         let p = [1., 100., 2., 1.];
         assert!(close(m.mean(&p, 0.5), 100. * (-1.25f64).exp(), 1e-14));

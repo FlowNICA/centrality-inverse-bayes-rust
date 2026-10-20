@@ -387,11 +387,15 @@ impl FitConfig {
         {
             *file = expand_home(file);
         }
-        if let MeanModel::Histogram { file, .. } | MeanModel::Tree { file, .. } = &mut config.mean {
+        if let MeanModel::Histogram { file, .. }
+        | MeanModel::Tree { file, .. }
+        | MeanModel::Idrisov { file, .. } = &mut config.mean
+        {
             *file = expand_home(file);
         }
-        if let VarianceModel::Histogram { file, .. } | VarianceModel::Tree { file, .. } =
-            &mut config.variance
+        if let VarianceModel::Histogram { file, .. }
+        | VarianceModel::Tree { file, .. }
+        | VarianceModel::Idrisov { file, .. } = &mut config.variance
         {
             *file = expand_home(file);
         }
@@ -429,6 +433,13 @@ impl FitConfig {
         if let Some(spec) = self.variance.profile_spec() {
             spec.validate()
                 .map_err(|e| Error::Config(format!("variance: {e}")))?;
+        }
+        if self.mean.function_spec().is_some() != self.variance.function_spec().is_some() {
+            return err(format!(
+                "the Idrisov mean and variance are used together (the variance depends on m1 \
+                 of the mean), got mean {} and variance {}",
+                self.mean, self.variance
+            ));
         }
         if let (Some(lo), Some(hi)) = (self.fit_min, self.fit_max)
             && !(lo < hi)
